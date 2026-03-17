@@ -1,200 +1,110 @@
-use self::{
-    memory::Request,
-    registers::{DReg, Reg},
-};
+mod bus;
+mod cpu;
+mod debugger;
+mod util;
 
-mod memory;
-mod registers;
+pub use debugger::Debugger;
+
+use self::cpu::CycleError;
 
 pub struct GameboyColor {
-    memory: memory::Memory,
-    registers: registers::Registers,
+    pub cpu: cpu::CPU,
+    bus: bus::Bus,
+    cycles: Cycles,
 }
 
-pub type Cycles = usize;
+/**
+ * T-Cycles
+ */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cycles(usize);
+
+impl Cycles {
+
+    pub fn new(cycles: usize) -> Self {
+        Self(cycles)
+    }
+
+    pub fn t(&self) -> usize {
+        self.0
+    }
+
+    pub fn m(&self) -> usize {
+        self.0 / 4
+    }
+}
+
+impl PartialEq<usize> for Cycles {
+    fn eq(&self, other: &usize) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<usize> for Cycles {
+    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl<'a> std::ops::Div<u8> for &'a Cycles {
+    type Output = Cycles;
+
+    fn div(self, rhs: u8) -> Self::Output {
+        Cycles(self.0 / rhs as usize)
+    }
+}
+
+pub struct GameboyCycle {
+    pub cpu: cpu::CycleExecution,
+    pub render: bool,
+}
 
 impl GameboyColor {
-    pub fn new() -> Self {
+    pub const CLOCK_SPEED: usize = 4194304;
+
+    pub fn new(rom: Vec<u8>) -> Self {
         Self {
-            memory: memory::Memory::new(),
-            registers: registers::Registers::new(),
+            cpu: cpu::CPU::new(),
+            bus: bus::Bus::new(rom),
+            cycles: Cycles(0),
         }
     }
 
-    pub fn set_cartridge(&mut self, cartridge: &[u8]) -> Result<(), ()> {
-        self.memory.set_cartridge(cartridge);
-        self.registers.pc = 0x0100;
-        Ok(())
+    pub fn cycle(&mut self) -> Result<GameboyCycle, CycleError> {
+        let cpu = self.cpu.cycle(&mut self.bus)?;
+        self.cycles.0 += cpu.cycles.0; 
+        self.bus.cycle(&cpu.cycles).map(|render| GameboyCycle { cpu, render }).map_err(|e| CycleError::Bus(self.cpu.pc(), e))
     }
 
-    pub fn step(&mut self) -> Cycles {
-        self.handle_interrupts();
-        let opcode = self.memory.next_program_byte(&mut self.registers.pc);
+    pub fn reset(&mut self) {
+        self.cpu.reset();
+        self.bus.reset();
+    }
 
-        println!("PC: 0x{:04X}, Op: 0x{opcode:02X}", self.registers.pc - 1);
+    pub fn cycles(&self) -> usize {
+        self.cycles.0
+    }
+        
+    pub fn frame_to_rgba(&self, output: &mut [u8]) {
 
-        // TODO HANDLE FLAG CHANGES
+        const DEFAULT_PALETTE: [[u8; 4]; 4] = [
+            [0xE0, 0xF8, 0xD0, 0xFF],
+            [0x88, 0xC0, 0x70, 0xFF],
+            [0x34, 0x68, 0x56, 0xFF],
+            [0x08, 0x18, 0x20, 0xFF],
+        ];
 
-        match opcode {
-            0x00 => 4,
-
-            0x01 => {
-                self.registers[DReg::BC] =
-                    u16::from_le_bytes(self.memory[Request::<2>(self.registers.pc)]);
-                self.registers.pc += 2;
-                12
-            }
-
-            // ld (bc), a
-            0x02 => {
-                self.memory[self.registers[DReg::BC]] = self.registers[Reg::A];
-                8
-            }
-            // inc bc
-            0x03 => {
-                self.registers[DReg::BC] += 1;
-                8
-            }
-            // inc register
-            0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
-                let reg = Reg::from(opcode >> 3 & 7);
-                self.registers[reg] = self.registers.add(reg, 1, None);
-                4
-            }
-            // dec register
-            0x05 | 0x0D => {
-                // TODO SET FLAGS
-                let reg = Reg::from(opcode >> 3 & 7);
-                self.registers[reg] = self.registers.sub(reg, 1, None);
-                4
-            }
-            0x06 => {
-                self.registers[Reg::B] = self.memory[self.registers.pc];
-                self.registers.pc += 1;
-                8
-            }
-            0x07 => {
-                // TODO SET FLAGS
-                let a = &mut self.registers[Reg::A];
-                *a = u8::rotate_left(*a, 1); // copy to carry flag too
-                4
-            }
-            0x08 => {
-                self.registers.sp =
-                    u16::from_be_bytes(self.memory[Request::<2>(self.registers.pc)]);
-                self.registers.pc += 2;
-                20
-            }
-            0x09 => {
-                // TODO SET FLAGS
-                self.registers[DReg::HL] += self.registers[DReg::BC];
-                8
-            }
-            0x0A => {
-                self.registers[Reg::A] = self.memory[self.registers[DReg::BC]];
-                8
-            }
-            0x0B => {
-                self.registers[Reg::B] -= 1;
-                8
-            }
-            0x10 => {
-                todo!("STOP opcode: low power standby");
-            }
-            0x18 => {
-                let d = i8::from_ne_bytes([self.memory[self.registers.pc]])+1;
-                if d.is_negative() {
-                    self.registers.pc -= d as u16;
-                } else {
-                    self.registers.pc += d as u16;
-                }
-                12
-            }
-            0x20 | 0x28 => {
-                let mut flag = self.registers.zero_flag();
-
-                if opcode == 0x20 {
-                    flag = !flag;
-                }
-
-                match flag {
-                    true => {
-                        let d = i8::from_le_bytes([self.memory[self.registers.pc]]) + 1;
-                        if d.is_negative() {
-                            self.registers.pc -= d as u16;
-                        } else {
-                            self.registers.pc += d as u16;
-                        }
-                        12
-                    }
-                    false => {
-                        self.registers.pc += 1;
-                        8
-                    }
-                }
-            }
-            0x40..=0x45
-            | 0x47..=0x4D
-            | 0x4F..=0x55
-            | 0x57..=0x5D
-            | 0x5F..=0x65
-            | 0x67..=0x6D
-            | 0x6F..=0x75
-            | 0x77..=0x7D
-            | 0x7F => {
-                self.registers[Reg::from(opcode >> 3 & 7)] = self.registers[Reg::from(opcode & 7)];
-                8
-            }
-            0x46 | 0x4E | 0x56 | 0x5E | 0x66 | 0x6E | 0x76 | 0x7E => {
-                self.registers[Reg::from(opcode >> 3 & 7)] = self.memory[self.registers[DReg::HL]];
-                8
-            }
-            0x80..=0x85 | 0x87 => {
-                self.registers[Reg::A] += self.registers[Reg::from(opcode & 7)];
-                4
-            }
-            0xA8..=0xAD | 0xAF => {
-                self.registers[Reg::A] ^= self.registers[Reg::from(opcode & 7)];
-                if self.registers[Reg::A] == 0 {
-                    self.registers[Reg::F] |= Reg::ZERO_FLAG;
-                }
-                4
-            }
-            0xC3 => {
-                self.registers.pc =
-                    u16::from_le_bytes(self.memory[Request::<2>(self.registers.pc)]);
-                16
-            }
-            0xE6 => {
-                self.registers[Reg::A] +=
-                    self.registers
-                        .add(Reg::A, self.memory[self.registers.pc], None);
-                self.registers.pc += 1;
-                8
-            }
-            0xF0 => {
-                self.registers[Reg::A] =
-                    self.memory[self.memory[self.registers.pc] as u16 + 0xFF00];
-                self.registers.pc += 1;
-                12
-            }
-            0xFE => {
-                let (_, overflow) =
-                    self.registers[Reg::A].overflowing_sub(self.memory[self.registers.pc]);
-                if overflow {
-                    self.registers[Reg::F] |= Reg::CARRY_FLAG;
-                }
-                self.registers.pc += 1;
-                8
-            }
-            _ => panic!("Unknown opcode 0x{opcode:X}!"),
+        for (idx, shade) in self.bus.ppu.framebuffer().iter().enumerate() {
+            let shade = (*shade & 0x03) as usize;
+            let base = idx * 4;
+            output[base..base+4].copy_from_slice(&DEFAULT_PALETTE[shade]);
         }
-    }
-
-    #[must_use = "The bitmap must be used!"]
-    pub fn render(&self) -> &[u8] {
-        &[]
+        
     }
 
     pub fn handle_interrupts(&mut self) {}
+
+    pub fn title(&self) -> &str {
+        self.bus.cartridge.title()
+    }
 }
