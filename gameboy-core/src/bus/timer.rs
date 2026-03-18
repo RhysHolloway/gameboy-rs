@@ -3,97 +3,90 @@ use crate::util::Address;
 
 #[derive(Default)]
 pub struct Timer {
-    counter: u8,
-    div: u8,
+    div: u16,
     tima: u8,
     tma: u8,
     tac: u8,
-    tima_cooldown: u8,
+    overflow: bool,
 }
 
 impl Timer {
-
-    pub const DIV: u16      = 0xFF04;
-    pub const TIMA: u16     = 0xFF05;
-    pub const TMA: u16      = 0xFF06;
-    pub const TAC: u16      = 0xFF07;
+    pub const DIV: Address = Address::new(0xFF04);
+    pub const TIMA: Address = Address::new(0xFF05);
+    pub const TMA: Address = Address::new(0xFF06);
+    pub const TAC: Address = Address::new(0xFF07);
 
     const INTERRUPT_BIT: u8 = 0b100;
+    const TAC_ENABLE_BIT: u8 = 0b100;
+    const TAC_FREQ_BITS: u8 = 0b11;
 
-    const TAC_ENABLE_BIT: u8 = 2;
-
-    const TIMA_COOLDOWN_OVERFLOW: u8 = 4;
-
-    pub(super) const fn write(&mut self, address: Address, value: u8) {
-        match address.0 {
-            Self::DIV => self.div = 0,
-            Self::TIMA => self.tima = value,
-            Self::TMA => {
-                self.tma = value;
-                self.tima_cooldown = 0;
+    pub(super) const fn write(&mut self, address: &Address, value: u8) {
+        match address {
+            &Self::DIV => self.div = 0,
+            &Self::TIMA => self.tima = value,
+            &Self::TMA => self.tma = value,
+            &Self::TAC => {
+                self.tac = (self.tac & !(Self::TAC_ENABLE_BIT | Self::TAC_FREQ_BITS))
+                    | (value & (Self::TAC_ENABLE_BIT | Self::TAC_FREQ_BITS))
             }
-            Self::TAC => self.tac = value & 0b111,
             _ => unreachable!(),
         }
     }
 
-    pub(super) const fn read(&self, address: Address) -> u8 {
-        match address.0 {
-            Self::DIV => self.div,
-            Self::TIMA => self.tima,
-            Self::TMA => self.tma,
-            Self::TAC => self.tac(),
-            _ => unreachable!()
+    pub(super) const fn read(&self, address: &Address) -> u8 {
+        match address {
+            // return most significant bit
+            &Self::DIV => self.div(),
+            &Self::TIMA => self.tima,
+            &Self::TMA => self.tma,
+            &Self::TAC => self.tac(),
+            _ => unreachable!(),
         }
     }
 
     pub fn cycle(&mut self, int: &mut u8, cycles: &Cycles) {
-        let t_cycles = cycles.t();
+        let ticks = cycles.t() as u16;
 
-        for _ in 0..t_cycles {
-            let (counter, overflow) = self.counter.overflowing_add(1);
-            self.counter = counter;
-            if !overflow {
-                continue;
-            }
+        let old_div = self.div;
 
-            let old_bit = self.tima_status();
-            self.div = self.div.wrapping_add(1);
-            let new_bit = self.tima_status();
-            let enabled = (self.tac & Self::TAC_ENABLE_BIT) != 0;
+        self.div = self.div.wrapping_add(ticks);
 
-            if self.tima_cooldown != 0 {
-                self.tima_cooldown -= 1;
-                if self.tima_cooldown == 0 {
-                    self.tima = self.tma;
-                    *int |= Self::INTERRUPT_BIT;
-                }
-            } else if enabled & old_bit & !new_bit {
-                let (new_tima, overflow) = self.tima.overflowing_add(1);
-                self.tima = new_tima;
-                if overflow {
-                    self.tima_cooldown = Self::TIMA_COOLDOWN_OVERFLOW;
-                }
+        if self.overflow {
+            self.overflow = false;
+            *int |= Self::INTERRUPT_BIT;
+            self.tima = self.tma;
+        }
+
+        let freq = self.step();
+        let increase_tima = (old_div.wrapping_add(ticks) / freq).wrapping_sub(old_div / freq) as u8;
+
+        // If bit 2 of TAC is set to 0 then the timer is disabled
+        if increase_tima != 0 && self.enabled() {
+            if self.tima == 0xFF {
+                self.tima = 0;
+                self.overflow = true;
+            } else {
+                self.tima = self.tima.wrapping_add(increase_tima);
             }
         }
     }
 
-    const fn get_tima_period(&self) -> u16 {
-        match self.tac & 0b11 {
-            0b00 => 1 << 9,
-            0b01 => 1 << 3,
-            0b10 => 1 << 5,
-            0b11 => 1 << 7,
-            _ => unreachable!()
+    const fn step(&self) -> u16 {
+        match self.tac & Self::TAC_FREQ_BITS {
+            0b00 => 128,
+            0b01 => 2,
+            0b10 => 8,
+            0b11 => 32,
+            _ => unreachable!(),
         }
     }
 
-    const fn tima_status(&self) -> bool {
-        (self.div as u16 & self.get_tima_period()) != 0
+    const fn enabled(&self) -> bool {
+        self.tac & Self::TAC_ENABLE_BIT != 0
     }
 
     pub const fn div(&self) -> u8 {
-        self.div
+        (self.div >> 8) as u8
     }
 
     pub const fn tima(&self) -> u8 {
@@ -105,8 +98,6 @@ impl Timer {
     }
 
     pub const fn tac(&self) -> u8 {
-        self.tac | 0b11111000
+        self.tac & 0b111
     }
-
-
 }

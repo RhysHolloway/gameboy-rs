@@ -1,6 +1,8 @@
 use egui::Widget;
+use gameboy_core::Cartridge;
 use pixels::winit::dpi::PhysicalSize;
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use gameboy_core::cpu::{CycleError, CycleExecution, DReg, ExecutionType, Opcode, Reg};
 use gameboy_core::util::{Address, Width};
@@ -20,7 +22,7 @@ pub struct Debugger {
     step: bool,
     run: bool,
     error: Option<String>,
-    serial: Vec<u8>,
+    serial: Arc<Mutex<VecDeque<u8>>>,
     speed_text: String,
     speed: f64,
     history: VecDeque<ExecutionType>,
@@ -39,13 +41,13 @@ impl Debugger {
             speed_text: String::new(),
             speed: 1.0,
             error: None,
-            serial: Vec::new(),
+            serial: Arc::new(Mutex::new(VecDeque::new())),
             history: VecDeque::new(),
         }
     }
 
-    pub fn log(&mut self, gb: &GameboyColor) {
-        let address = Address(gb.cpu.registers[DReg::PC]);
+    pub fn log<D: AsRef<[u8]>>(&mut self, cart: &Cartridge<D>, gb: &GameboyColor) {
+        let address = Address::new(gb.cpu.registers[DReg::PC]);
         // A:00 F:11 B:22 C:33 D:44 E:55 H:66 L:77 SP:8888 PC:9999 PCMEM:AA,BB,CC,DD
         println!(
             "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
@@ -59,16 +61,14 @@ impl Debugger {
             gb.cpu.registers[Reg::L],
             gb.cpu.registers[DReg::SP],
             address,
-            gb.bus.read_dma(address).unwrap_or(0xFF),
-            gb.bus.read_dma(address + 1).unwrap_or(0xFF),
-            gb.bus.read_dma(address + 2).unwrap_or(0xFF),
-            gb.bus.read_dma(address + 3).unwrap_or(0xFF)
+            gb.bus.read_dma(cart, address).unwrap_or(0xFF),
+            gb.bus.read_dma(cart, address + 1).unwrap_or(0xFF),
+            gb.bus.read_dma(cart, address + 2).unwrap_or(0xFF),
+            gb.bus.read_dma(cart, address + 3).unwrap_or(0xFF)
         );
     }
 
     pub fn on_cycle(&mut self, result: CycleExecution) {
-        if matches!(result.execution, ExecutionType::Halt) {}
-
         match result.execution {
             ExecutionType::Halt => {
                 if matches!(self.history.back(), Some(&ExecutionType::Halt)) {
@@ -84,22 +84,23 @@ impl Debugger {
         }
     }
 
-    pub fn window(
+    pub fn window<D: AsRef<[u8]>>(
         &mut self,
+        cart: &Cartridge<Vec<u8>>,
         gb: &mut GameboyColor,
         ctx: &egui::Context,
         window: PhysicalSize<u32>,
     ) {
-        egui::Window::new(format!("Debug - {}", gb.title())).show(ctx, |ui| {
+        egui::Window::new(format!("Debug - {}", cart.title())).show(ctx, |ui| {
             ui.columns(4, |cols| {
                 // address space / error
 
-                let mut address = Address(gb.cpu.registers[DReg::PC]);
+                let mut address = Address::new(gb.cpu.registers[DReg::PC]);
 
                 let opcol = &mut cols[0];
 
                 for i in 0..10 {
-                    match gb.bus.read(address) {
+                    match gb.bus.read(cart, address) {
                         Ok(op) => {
                             let opcode = Opcode(op);
                             let ptr = match i == 0 {
@@ -110,11 +111,11 @@ impl Debugger {
                                 Some(desc) => {
                                     egui::Label::new(format!(
                                         "{address}\t{opcode},\t{}\t{ptr}",
-                                        desc.format(&gb.bus, address)
+                                        desc.format(cart, &gb.bus, address)
                                     ))
                                     .wrap_mode(egui::TextWrapMode::Extend)
                                     .ui(opcol);
-                                    address.0 += desc.length as u16;
+                                    address += desc.length as u16;
                                 }
                                 None => {
                                     egui::Label::new(format!(
@@ -122,7 +123,7 @@ impl Debugger {
                                     ))
                                     .wrap_mode(egui::TextWrapMode::Extend)
                                     .ui(opcol);
-                                    address.0 += 1;
+                                    address += 1;
                                 }
                             }
                         }
@@ -186,35 +187,39 @@ impl Debugger {
 
                 let sercol = &mut cols[2];
 
-                sercol.label("Serial I/O");
-                sercol.separator();
-
-                if !gb.bus.serial.output.is_empty() {
-                    self.serial.extend(gb.bus.serial.output.drain(..));
-                }
-
-                if self.serial.len() < 128 {
-                    egui::ScrollArea::vertical()
-                        .id_salt("serbytes")
-                        .show(sercol, |sercol| {
-                            let bytes = self
-                                .serial
-                                .iter()
-                                .fold(String::new(), |prev, next| format!("{prev}{next:02X}"));
-                            egui::Label::new(format!("{}", bytes))
-                                .wrap_mode(egui::TextWrapMode::Wrap)
-                                .ui(sercol);
-                        });
+                if let Ok(serial) = self.serial.try_lock() {
+                    sercol.label("Serial I/O");
                     sercol.separator();
-                }
 
-                egui::ScrollArea::vertical()
-                    .id_salt("sertext")
-                    .show(sercol, |sercol| {
-                        egui::Label::new(String::from_utf8_lossy(&self.serial))
-                            .wrap_mode(egui::TextWrapMode::Wrap)
-                            .ui(sercol);
-                    });
+                    if !serial.is_empty() {
+
+                        if serial.len() < 128 {
+                            egui::ScrollArea::vertical().id_salt("serbytes").show(
+                                sercol,
+                                |sercol| {
+                                    let bytes =
+                                        serial.iter().fold(String::new(), |prev, next| {
+                                            format!("{prev}{next:02X}")
+                                        });
+                                    egui::Label::new(format!("{}", bytes))
+                                        .wrap_mode(egui::TextWrapMode::Wrap)
+                                        .ui(sercol);
+                                },
+                            );
+                            sercol.separator();
+                        }
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("sertext")
+                            .show(sercol, |sercol| {
+                                egui::Label::new(String::from_utf8_lossy(serial.as_slices().1))
+                                    .wrap_mode(egui::TextWrapMode::Wrap)
+                                    .ui(sercol);
+                            });
+                    } else {
+                        sercol.label("Not connected");
+                    }
+                }
 
                 let bpcol = &mut cols[3];
 
@@ -257,7 +262,7 @@ impl Debugger {
                     self.run = false;
                     match Width::from_str_radix(&self.breakpoint_box, 16) {
                         Ok(addr) => {
-                            self.breakpoints.insert(Address(addr), true);
+                            self.breakpoints.insert(Address::new(addr), true);
                             self.breakpoint_box.clear();
                         }
                         Err(..) => (),
@@ -282,11 +287,11 @@ impl Debugger {
                                         format!(
                                             "{address} {}",
                                             gb.bus
-                                                .read_dma(*address)
+                                                .read_dma(cart, *address)
                                                 .and_then(|op| self.opcodes.get(&Opcode(op)).map(
                                                     |desc| format!(
                                                         "({})",
-                                                        desc.format(&gb.bus, *address)
+                                                        desc.format(cart, &gb.bus, *address)
                                                     )
                                                 ))
                                                 .unwrap_or_else(|| "Unknown".to_string())
@@ -341,7 +346,7 @@ impl Debugger {
 
     pub fn should_step(&mut self, gb: &GameboyColor) -> bool {
         if self.run {
-            let pc = Address(gb.cpu.registers[DReg::PC]);
+            let pc = Address::new(gb.cpu.registers[DReg::PC]);
             if self.breakpoints.get(&pc).copied().unwrap_or_default() {
                 if !self.breakpoint {
                     self.step = false;

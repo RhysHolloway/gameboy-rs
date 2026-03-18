@@ -1,4 +1,4 @@
-use crate::util::MemoryError;
+use crate::util::{Address, MemoryError};
 
 #[derive(Default)]
 pub struct Cgb {
@@ -7,17 +7,19 @@ pub struct Cgb {
 
 impl Cgb {
 
-    pub fn read_mapped(&self, address: impl Into<usize> + Copy) -> Result<u8, MemoryError> {
-        match address.into() {
-            0xFF4D => Ok(self.key1),
-            _ => Err(MemoryError::read("CGB", address)),
+    const KEY1_START: Address = Address::new(0xFF4D);
+
+    pub const fn read_mapped(&self, address: &Address) -> Result<u8, MemoryError> {
+        match address {
+            &Self::KEY1_START => Ok(self.key1),
+            _ => Err(MemoryError::Read("CGB", *address)),
         }
     }
 
-    pub fn write_mapped(&mut self, address: impl Into<usize> + Copy, value: u8) -> Result<(), MemoryError> {
-        match address.into() {
-            0xFF4D => self.key1 = value & 1,
-            _ => return Err(MemoryError::write("CGB", address)),
+    pub const fn write_mapped(&mut self, address: &Address, value: u8) -> Result<(), MemoryError> {
+        match address {
+             &Self::KEY1_START => self.key1 = value & 1,
+            _ => return Err(MemoryError::Write("CGB", *address)),
         }
         Ok(())
     }

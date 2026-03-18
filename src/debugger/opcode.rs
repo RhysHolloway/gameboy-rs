@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use gameboy_core::Cartridge;
 use gameboy_core::bus::Bus;
 use gameboy_core::util::{Address, Width};
 use gameboy_core::cpu::Opcode;
@@ -36,29 +37,29 @@ pub struct OpcodeDescriptor {
 }
 
 impl OpcodeDescriptor {
-    pub fn format(&self, memory: &Bus, mut address: Address) -> String {
+    pub fn format<D: AsRef<[u8]>>(&self, cart: &Cartridge<D>, memory: &Bus, mut address: Address) -> String {
         let mut s = String::with_capacity(self.name.len() + 1 + self.args.len());
         s.push_str(&self.name);
         s.push('\t');
         s.push_str(&self.args);
         let mut index = 0;
-        address.0 += self.length as u16;
+        address += self.length;
         while let Some(offset) = s.get(index..).map(|s| s.find('%')).flatten() {
             index += offset;
             match s.get(index + 1..index + 2) {
                 Some(char) => {
                     let value = match char {
                         "I" => {
-                            address.0 -= 1;
-                            memory.read(address).map(|val| (val as i8).to_string()).ok()
+                            address -= 1;
+                            memory.read(cart, address).map(|val| (val as i8).to_string()).ok()
                         },
                         "S" => {
-                            address.0 -= 1;
-                            memory.read(address).map(|val| format!("{val:02X}")).ok()
+                            address -= 1;
+                            memory.read(cart, address).map(|val| format!("{val:02X}")).ok()
                         },
                         "D" => {
-                            address.0 -= 2;
-                            memory.read_word(address).map(|val| format!("{val:04X}")).ok()
+                            address -= 2;
+                            memory.read_word(cart, address).map(|val| format!("{val:04X}")).ok()
                         }
                         _ => None,
                     };

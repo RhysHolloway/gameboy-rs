@@ -1,8 +1,10 @@
 pub mod bus;
 pub mod cpu;
 pub mod util;
+mod cartridge;
 
-use crate::util::Controls;
+pub use crate::util::*;
+pub use crate::cartridge::*;
 
 use self::cpu::CycleError;
 
@@ -63,19 +65,25 @@ pub struct GameboyCycle {
     pub render: bool,
 }
 
+impl Default for GameboyColor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GameboyColor {
     pub const CLOCK_SPEED: usize = 4194304;
 
-    pub fn new(rom: Vec<u8>) -> Self {
+    pub fn new() -> Self {
         Self {
             cpu: cpu::CPU::new(),
-            bus: bus::Bus::new(rom),
+            bus: bus::Bus::new(),
         }
     }
 
-    pub fn cycle(&mut self) -> Result<GameboyCycle, CycleError> {
-        let cpu = self.cpu.cycle(&mut self.bus)?;
-        self.bus.cycle(&cpu.cycles).map(|render| GameboyCycle { cpu, render }).map_err(|e| CycleError::Bus(self.cpu.pc(), e))
+    pub fn cycle<D: AsRef<[u8]>>(&mut self, cart: &mut Cartridge<D>) -> Result<GameboyCycle, CycleError> {
+        let cpu = self.cpu.cycle(cart, &mut self.bus)?;
+        self.bus.cycle(cart, &cpu.cycles).map(|render| GameboyCycle { cpu, render }).map_err(|e| CycleError::Bus(self.cpu.pc(), e))
     }
 
     pub fn reset(&mut self) {
@@ -100,13 +108,9 @@ impl GameboyColor {
         
     }
 
-    pub fn update_input(&mut self, input: (Controls, bool)) {
-        self.bus.update_input((input.0, !input.1));
+    pub fn update_input(&mut self, button: Controls, pressed: bool) {
+        self.bus.update_input(button, pressed);
     }
 
     pub fn handle_interrupts(&mut self) {}
-
-    pub fn title(&self) -> std::borrow::Cow<'_, str> {
-        self.bus.cartridge.title()
-    }
 }

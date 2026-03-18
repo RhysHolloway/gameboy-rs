@@ -1,5 +1,5 @@
 use crate::Cycles;
-use crate::util::{Address, BusComponent, MappedComponent, MemoryError, OffsetMemory};
+use crate::util::{Address, MemoryError, OffsetMemory};
 
 pub struct Ppu {
     clock: u16,
@@ -48,19 +48,19 @@ impl Ppu {
     pub const SCREEN_WIDTH: usize = 160;
     pub const SCREEN_HEIGHT: usize = 144;
 
-    pub const ADDRESS_LCDC: Address = Address(0xFF40);
-    pub const ADDRESS_STAT: Address = Address(0xFF41); // lcd status memory location
-    pub const ADDRESS_SCY: Address = Address(0xFF42);
-    pub const ADDRESS_SCX: Address = Address(0xFF43);
-    pub const ADDRESS_LY: Address = Address(0xFF44);
-    pub const ADDRESS_LYC: Address = Address(0xFF45);
-    pub const ADDRESS_BGP: Address = Address(0xFF47);
-    pub const ADDRESS_OBJP1: Address = Address(0xFF48);
-    pub const ADDRESS_OBJP2: Address = Address(0xFF49);
-    pub const ADDRESS_WY: Address = Address(0xFF4A);
-    pub const ADDRESS_WX: Address = Address(0xFF4B);
+    pub const ADDRESS_LCDC: Address = Address::new(0xFF40);
+    pub const ADDRESS_STAT: Address = Address::new(0xFF41); // lcd status memory location
+    pub const ADDRESS_SCY: Address = Address::new(0xFF42);
+    pub const ADDRESS_SCX: Address = Address::new(0xFF43);
+    pub const ADDRESS_LY: Address = Address::new(0xFF44);
+    pub const ADDRESS_LYC: Address = Address::new(0xFF45);
+    pub const ADDRESS_BGP: Address = Address::new(0xFF47);
+    pub const ADDRESS_OBJP1: Address = Address::new(0xFF48);
+    pub const ADDRESS_OBJP2: Address = Address::new(0xFF49);
+    pub const ADDRESS_WY: Address = Address::new(0xFF4A);
+    pub const ADDRESS_WX: Address = Address::new(0xFF4B);
 
-    pub const ADDRESS_VBK: Address = Address(0xFF4F); // CGB only, VRAM bank select
+    pub const ADDRESS_VBK: Address = Address::new(0xFF4F); // CGB only, VRAM bank select
 
     // interrupt flag bits
     pub const INTERRUPT_VBLANK: u8 = 1 << 0;
@@ -100,7 +100,7 @@ impl Ppu {
     pub const LCDC_OBJ_SIZE: u8 = 1 << 2;
 
     pub fn read_vram(&self, address: Address) -> Result<u8, MemoryError> {
-        self.vram.read_mapped(address)
+        if self.stat & 3 != 3 { self.vram.read_mapped(address) } else { Err(MemoryError::Read(self.vram.location(), address)) }
     }
 
     pub fn write_vram(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
@@ -156,21 +156,21 @@ impl Ppu {
         Ok(render)
     }
 
-    pub fn read_reg(&self, address: Address) -> Result<u8, MemoryError> {
+    pub const fn read_reg(&self, address: &Address) -> Result<u8, MemoryError> {
         Ok(match address {
-            Self::ADDRESS_LCDC => self.lcdc,
-            Self::ADDRESS_STAT => self.stat,
-            Self::ADDRESS_SCY => self.scy,
-            Self::ADDRESS_SCX => self.scx,
-            Self::ADDRESS_LY => self.ly(),
-            Self::ADDRESS_LYC => self.lyc,
-            Self::ADDRESS_BGP => self.bgp,
-            Self::ADDRESS_OBJP1 => self.obp0,
-            Self::ADDRESS_OBJP2 => self.obp1,
-            Self::ADDRESS_WY => self.wy,
-            Self::ADDRESS_WX => self.wx,
+            &Self::ADDRESS_LCDC => self.lcdc,
+            &Self::ADDRESS_STAT => self.stat,
+            &Self::ADDRESS_SCY => self.scy,
+            &Self::ADDRESS_SCX => self.scx,
+            &Self::ADDRESS_LY => self.ly(),
+            &Self::ADDRESS_LYC => self.lyc,
+            &Self::ADDRESS_BGP => self.bgp,
+            &Self::ADDRESS_OBJP1 => self.obp0,
+            &Self::ADDRESS_OBJP2 => self.obp1,
+            &Self::ADDRESS_WY => self.wy,
+            &Self::ADDRESS_WX => self.wx,
             _ => {
-                return Err(MemoryError::read("PPU Register", address));
+                return Err(MemoryError::Read("PPU Register", *address));
             }
         })
     }
@@ -179,9 +179,9 @@ impl Ppu {
         self.ly
     }
 
-    pub fn write_reg(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
+    pub const fn write_reg(&mut self, address: &Address, value: u8) -> Result<(), MemoryError> {
         match address {
-            Self::ADDRESS_LCDC => {
+            &Self::ADDRESS_LCDC => {
                 let was_enabled = self.lcdc & 0x80 != 0;
                 self.lcdc = value;
                 let enabled = self.lcdc & 0x80 != 0;
@@ -193,23 +193,23 @@ impl Ppu {
                     self.window_line = 0;
                 }
             }
-            Self::ADDRESS_STAT => self.stat = (self.stat & 0x07) | (value & 0x78),
-            Self::ADDRESS_SCY => self.scy = value,
-            Self::ADDRESS_SCX => self.scx = value,
-            Self::ADDRESS_LYC => self.lyc = value,
-            Self::ADDRESS_BGP => self.bgp = value,
-            Self::ADDRESS_OBJP1 => self.obp0 = value & 0xFC,
-            Self::ADDRESS_OBJP2 => self.obp1 = value & 0xFC,
-            Self::ADDRESS_WY => self.wy = value,
-            Self::ADDRESS_WX => self.wx = value,
+            &Self::ADDRESS_STAT => self.stat = (self.stat & 0x07) | (value & 0x78),
+            &Self::ADDRESS_SCY => self.scy = value,
+            &Self::ADDRESS_SCX => self.scx = value,
+            &Self::ADDRESS_LYC => self.lyc = value,
+            &Self::ADDRESS_BGP => self.bgp = value,
+            &Self::ADDRESS_OBJP1 => self.obp0 = value & 0xFC,
+            &Self::ADDRESS_OBJP2 => self.obp1 = value & 0xFC,
+            &Self::ADDRESS_WY => self.wy = value,
+            &Self::ADDRESS_WX => self.wx = value,
             _ => {
-                return Err(MemoryError::write("PPU Register", address));
+                return Err(MemoryError::Write("PPU Register", *address));
             }
         }
         Ok(())
     }
 
-    fn update_ly(&mut self, int: &mut u8, value: u8) {
+    const fn update_ly(&mut self, int: &mut u8, value: u8) {
         self.ly = value;
         if self.ly() == self.lyc {
             self.stat |= Self::STAT_LY_COMPARE;
@@ -221,7 +221,7 @@ impl Ppu {
         }
     }
 
-    fn set_mode(&mut self, int: &mut u8, mode: u8) -> Result<(), MemoryError> {
+    const fn set_mode(&mut self, int: &mut u8, mode: u8) -> Result<(), MemoryError> {
         self.stat &= 0xF8;
         self.stat |= mode;
         let mut interrupt = false;
@@ -284,10 +284,10 @@ impl Ppu {
         if sprite_enable {
             for i in 0..40 {
                 let base = i * 4;
-                let sy = self.voam.read_offset(base)? as i16 - 16;
-                let sx = self.voam.read_offset(base + 1)? as i16 - 8;
-                let tile = self.voam.read_offset(base + 2)?;
-                let attrs = self.voam.read_offset(base + 3)?;
+                let sy = self.voam.read_offset(Address::from_index(base))? as i16 - 16;
+                let sx = self.voam.read_offset(Address::from_index(base + 1))? as i16 - 8;
+                let tile = self.voam.read_offset(Address::from_index(base + 2))?;
+                let attrs = self.voam.read_offset(Address::from_index(base + 3))?;
                 if y as i16 >= sy && (y as i16) < sy + sprite_size && sprite_count < 10 {
                     sprites[sprite_count] = Sprite {
                         x: sx,
@@ -328,7 +328,7 @@ impl Ppu {
                 let tile_y = (pixel_y / 8) & 31;
                 let tile_index = self
                     .vram
-                    .read_offset((map_base + tile_y * 32 + tile_x) as usize)?;
+                    .read_offset(Address::new(map_base + tile_y * 32 + tile_x))?;
                 let tile_addr = if self.lcdc & 0x10 != 0 {
                     tile_data_base + (tile_index as u16) * 16
                 } else {
@@ -337,8 +337,8 @@ impl Ppu {
                 };
                 let line = pixel_y % 8;
                 let bit = 7 - (pixel_x % 8);
-                let lo = self.vram.read_offset((tile_addr + line * 2) as usize)?;
-                let hi = self.vram.read_offset((tile_addr + line * 2 + 1) as usize)?;
+                let lo = self.vram.read_offset(Address::new(tile_addr + line * 2))?;
+                let hi = self.vram.read_offset(Address::new(tile_addr + line * 2 + 1))?;
                 bg_color_id = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
             }
 
@@ -366,8 +366,8 @@ impl Ppu {
                         let tile_addr = (tile as u16) * 16;
                         let line = sprite_y as u16;
                         let bit = 7 - (sprite_x as u16);
-                        let lo = self.vram.read_offset((tile_addr + line * 2) as usize)?;
-                        let hi = self.vram.read_offset((tile_addr + line * 2 + 1) as usize)?;
+                        let lo = self.vram.read_offset(Address::new(tile_addr + line * 2))?;
+                        let hi = self.vram.read_offset(Address::new(tile_addr + line * 2 + 1))?;
                         let color_id = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
                         if color_id != 0 {
                             let palette = if sprite.attrs & 0x10 != 0 {

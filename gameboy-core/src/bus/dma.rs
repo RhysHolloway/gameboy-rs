@@ -1,6 +1,6 @@
 use crate::bus::Bus;
-use crate::Cycles;
-use crate::util::{Address, BusComponent, MemoryError};
+use crate::{Cartridge, Cycles};
+use crate::util::{Address, MemoryError};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Dma {
@@ -12,22 +12,22 @@ pub struct Dma {
 
 impl Dma {
 
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         self.active
     }
 
-    pub(super) fn read(&self) -> u8 {
+    pub(super) const fn read(&self) -> u8 {
         self.value
     }
 
-    pub(super) fn write(&mut self, value: u8) {
+    pub(super) const fn write(&mut self, value: u8) {
         self.value = value;
         self.index = 0;
         self.cycle_counter = 0;
         self.active = true;
     }
 
-    pub(super) fn cycle(cycles: &Cycles, bus: &mut Bus) -> Result<(), MemoryError> {
+    pub(super) fn cycle<D: AsRef<[u8]>>(cycles: &Cycles, rom: &Cartridge<D>, bus: &mut Bus) -> Result<(), MemoryError> {
         let mut this = std::mem::take(&mut bus.dma);
         if !this.active {
             return Ok(());
@@ -36,9 +36,9 @@ impl Dma {
             this.cycle_counter += 1;
             if this.cycle_counter >= 4 {
                 this.cycle_counter = 0;
-                let address = Address(((this.value as u16) << 8) | this.index);
-                let value = bus.read_dma(address).unwrap_or(0xFF);
-                bus.ppu.voam.write_offset(this.index as usize, value)?;
+                let address = Address::new(((this.value as u16) << 8) | this.index);
+                let value = bus.read_dma(rom, address).unwrap_or(0xFF);
+                bus.ppu.voam.write_offset(Address::new(this.index), value)?;
                 this.index += 1;
                 if this.index >= 160 {
                     this.active = false;

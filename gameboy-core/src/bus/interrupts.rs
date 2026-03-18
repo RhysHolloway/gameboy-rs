@@ -3,7 +3,7 @@ use crate::util::Address;
 pub struct Interrupts {
     pub i: u8,
     pub ie: u8,
-    ime: bool,
+    ime: u8,
     halt: bool,
 }
 
@@ -35,6 +35,9 @@ impl Default for Interrupts {
 impl Interrupts {
 
     pub fn interrupt(&mut self) -> InterruptState {
+        if self.ime > 1 {
+            self.ime -= 1;
+        }
         if self.halt {
             if self.i & self.ie != 0 {
                 self.halt = false;
@@ -46,19 +49,19 @@ impl Interrupts {
                 if bits & (1 << bit) != 0 {
                     self.halt = false;
                     self.i &= !(1 << bit);
-                    return InterruptState::Interrupt(Address(0x40 + 8 * bit));
+                    return InterruptState::Interrupt(Address::new(0x40 + 8 * bit));
                 }
             }
         }
         InterruptState::None
     }
     
-    pub const fn halt(&mut self) {
+    pub(crate) const fn halt(&mut self) {
         self.halt = true;
     }
     
     pub(crate) const fn set_ime(&mut self, value: bool) {
-        self.ime = value;
+        self.ime = value as u8 * 2;
     }
 
     pub const fn is_halting(&self) -> bool {
@@ -70,7 +73,7 @@ impl Interrupts {
     }
 
     pub const fn ime(&self) -> bool {
-        self.ime
+        self.ime == 1
     }
 }
 
