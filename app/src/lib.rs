@@ -1,15 +1,23 @@
+pub extern crate pixels;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use egui_winit::EventResponse;
 use gameboy_core::util::Controls;
-use instant::Instant;
+
+use pixels::winit::event_loop::EventLoopProxy;
+#[cfg(target_family = "wasm")]
+use web_time::Instant;
+
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
+
 use pixels::winit::keyboard::{Key, NamedKey};
 use tracing::error;
 
 use pixels::winit::{
     application::ApplicationHandler,
-    error::EventLoopError,
     event::{ElementState, KeyEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
@@ -23,62 +31,36 @@ use gameboy_core::{Cartridge, Cycles, GameboyColor};
 
 mod debugger;
 
-fn main() -> Result<(), EventLoopError> {
-    // let printlog = args
-    //     .get(2)
-    //     .map(|fname| fname.trim() == "log")
-    //     .unwrap_or(false);
-
-    // if printlog {
-    //     emulator.cpu.registers = gameboy_core::cpu::Registers::new_single(
-    //         0x00, 0x13, 0x00, 0xD8, 0x01, 0x4D, 0x01, 0xB0, 0xFFFE, 0x0100,
-    //     );
-    // } else {
-    tracing_subscriber::fmt()
-        // .with_max_level(tracing::Level::TRACE)
-        .with_target(false)
-        // .with_thread_names(true)
-        // .with_thread_ids(true)
-        .init();
-    // }
-
-    let mut app = Application {
-        emulator: Emulator {
-            gameboy: GameboyColor::new(),
-            debugger: Some(Debugger::new()),
-            // debugger: None,
-        },
-        cartridge: None,
-        graphics: None,
-    };
-
-    // if printlog {
-    //     // SET LY TO 0x90!
-    //     let emulator = app.emulator.as_mut().unwrap();
-    //     if let Some(debugger) = emulator.debugger.as_mut() {
-    //         debugger.set_running();
-    //     }
-    //     loop {
-    //         match emulator.update::<true>(None) {
-    //             ApplicationUpdate::Exit => break,
-    //             _ => (),
-    //         }
-    //     }
-    //     Ok(())
-    // } else {
-    let event_loop = EventLoop::new()?;
-    event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut app)
-    // }
-}
-
-pub struct Application {
-    emulator: Emulator,
-    cartridge: Option<Cartridge<Vec<u8>>>,
+pub struct Application<W: CreateWindow> {
+    pub emulator: Emulator,
+    pub cartridge: Option<Cartridge<Vec<u8>>>,
     graphics: Option<GraphicsState>,
+    proxy: Arc<EventLoopProxy<GraphicsState>>,
+    event_loop: Option<EventLoop<GraphicsState>>,
+    _w: std::marker::PhantomData<W>,
 }
 
-struct Emulator {
+impl<W: CreateWindow> Application<W> {
+    pub fn new(debugger: bool) -> Self {
+        let event_loop = EventLoop::<GraphicsState>::with_user_event().build().unwrap_or_else(|e| panic!("Could not create event loop with error {e}"));
+        event_loop.set_control_flow(ControlFlow::Poll);
+        Self {
+            emulator: Emulator::new(debugger),
+            cartridge: None,
+            graphics: None,
+            proxy: Arc::new(event_loop.create_proxy()),
+            event_loop: Some(event_loop),
+            _w: std::marker::PhantomData,
+        }
+    }
+
+    pub fn run(mut self) {
+        let el = self.event_loop.take();
+        el.unwrap().run_app(&mut self).unwrap_or_else(|e| panic!("Could not run event loop with error {e}"));
+    }
+}
+
+pub struct Emulator {
     gameboy: GameboyColor,
     debugger: Option<Debugger>,
 }
@@ -91,6 +73,13 @@ pub enum ApplicationUpdate {
 }
 
 impl Emulator {
+    pub fn new(debugger: bool) -> Self {
+        Self {
+            gameboy: GameboyColor::new(),
+            debugger: debugger.then(Debugger::new),
+        }
+    }
+
     pub fn update<D: AsRef<[u8]>, const LOG: bool>(
         &mut self,
         cart: &mut Cartridge<D>,
@@ -146,9 +135,9 @@ impl Emulator {
     }
 }
 
-struct GraphicsState {
+pub struct GraphicsState {
     window: Arc<Window>,
-    pixels: pixels::Pixels<'static>,
+    pixels: pixels::Pixels,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     egui_shapes: Vec<egui::epaint::ClippedPrimitive>,
@@ -160,50 +149,52 @@ impl GraphicsState {
     const CLOCK_SPEED: usize = 4194304;
     // const FRAME_RATE: usize = 60;
     // const CYCLES_PER_FRAME: usize = Self::CLOCK_SPEED / Self::FRAME_RATE;
+
+    pub async fn new(window: Window) -> GraphicsState {
+        let window = Arc::new(window);
+
+        let mut pixels = pixels::Pixels::new(160, 144, pixels::SurfaceTexture::new(&window)).await
+            .unwrap_or_else(|e| panic!("Could not initialize graphics with error: {e}"));
+
+        pixels.clear_color(wgpu::Color::GREEN);
+
+        let egui_state = egui_winit::State::new(
+            Default::default(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            pixels.device(),
+            pixels.render_texture_format(),
+            Default::default(),
+        );
+
+        GraphicsState {
+            window: window.clone(),
+            pixels,
+            egui_state,
+            egui_renderer,
+            egui_shapes: Vec::new(),
+            next: Instant::now(),
+        }
+    }
+
 }
 
-impl ApplicationHandler for Application {
+pub trait CreateWindow {
+    fn create_window(proxy: &Arc<EventLoopProxy<GraphicsState>>, event_loop: &ActiveEventLoop);
+}
+
+impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = Window::default_attributes().with_title(
-            self.cartridge
-                .as_ref()
-                .map(|c| format!("Gameboy Emulator - {}", c.title()))
-                .unwrap_or_else(|| "Gameboy Emulator".to_string()),
-        );
-        match event_loop.create_window(window_attributes) {
-            Ok(window) => {
-                let window = Arc::new(window);
-                let mut pixels =
-                    pixels::Pixels::new(160, 144, pixels::SurfaceTexture::new(&window))
-                        .expect("Could not create window!");
+        W::create_window(&self.proxy, event_loop);
+    }
 
-                pixels.clear_color(wgpu::Color::GREEN);
-
-                let egui_state = egui_winit::State::new(
-                    Default::default(),
-                    egui::ViewportId::ROOT,
-                    &window,
-                    Some(window.scale_factor() as f32),
-                    None,
-                    None,
-                );
-                let egui_renderer = egui_wgpu::Renderer::new(
-                    pixels.device(),
-                    pixels.render_texture_format(),
-                    Default::default(),
-                );
-
-                self.graphics = Some(GraphicsState {
-                    window: window.clone(),
-                    pixels,
-                    egui_state,
-                    egui_renderer,
-                    egui_shapes: Vec::new(),
-                    next: Instant::now(),
-                });
-            }
-            Err(e) => panic!("Could not create window: {e}"),
-        }
+    fn user_event(&mut self, _: &ActiveEventLoop, event: GraphicsState) {
+        self.graphics = Some(event);
     }
 
     fn window_event(
@@ -290,7 +281,9 @@ impl ApplicationHandler for Application {
                 }
 
                 if let Some(graphics) = self.graphics.as_mut() {
-                    if let Some((debugger, cart)) = self.emulator.debugger.as_mut().zip(self.cartridge.as_ref()) {
+                    if let Some((debugger, cart)) =
+                        self.emulator.debugger.as_mut().zip(self.cartridge.as_ref())
+                    {
                         let raw_input = graphics.egui_state.take_egui_input(&graphics.window);
 
                         let egui_output = graphics.egui_state.egui_ctx().run(raw_input, |ctx| {
@@ -382,17 +375,18 @@ impl ApplicationHandler for Application {
                         .unwrap();
                 }
             }
-            WindowEvent::DroppedFile(path) => {
-                match std::fs::read(path)  {
-                    Ok(rom) => {
-                        self.cartridge = Some(Cartridge::new(rom));
-                        if let Some(graphics) = self.graphics.as_mut() {
-                            graphics.window.set_title(&format!("Gameboy Emulator - {}", self.cartridge.as_ref().unwrap().title()));
-                        }
-                    },
-                    Err(err) => error!("Could not open ROM with error: {err}"),
+            WindowEvent::DroppedFile(path) => match std::fs::read(path) {
+                Ok(rom) => {
+                    self.cartridge = Some(Cartridge::new(rom));
+                    if let Some(graphics) = self.graphics.as_mut() {
+                        graphics.window.set_title(&format!(
+                            "Gameboy Emulator - {}",
+                            self.cartridge.as_ref().unwrap().title()
+                        ));
+                    }
                 }
-            }
+                Err(err) => error!("Could not open ROM with error: {err}"),
+            },
             _ => (),
         }
     }

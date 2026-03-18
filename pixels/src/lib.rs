@@ -92,8 +92,8 @@ pub struct PixelsContext<'win> {
 ///
 /// See [`PixelsBuilder`] for building a customized pixel buffer.
 #[derive(Debug)]
-pub struct Pixels<'win> {
-    context: PixelsContext<'win>,
+pub struct Pixels {
+    context: PixelsContext<'static>,
     surface_size: SurfaceSize,
     present_mode: wgpu::PresentMode,
     render_texture_format: wgpu::TextureFormat,
@@ -223,16 +223,13 @@ impl SurfaceTexture {
     pub fn new(window: &Arc<winit::window::Window>) -> Self {
         let winit::dpi::PhysicalSize { width, height } = window.inner_size();
 
-        assert!(width > 0);
-        assert!(height > 0);
-
         let size = SurfaceSize { width, height };
 
         Self { window: window.clone(), size }
     }
 }
 
-impl<'win> Pixels<'win> {
+impl Pixels {
     /// Create a pixel buffer instance with default options.
     ///
     /// Any ratio differences between the pixel buffer texture size and surface texture size will
@@ -263,47 +260,14 @@ impl<'win> Pixels<'win> {
     /// # Panics
     ///
     /// Panics when `width` or `height` are 0.
-    pub fn new(
+    pub async fn new(
         width: u32,
         height: u32,
         surface_texture: SurfaceTexture,
     ) -> Result<Self, Error> {
-        PixelsBuilder::new(width, height, surface_texture).build()
+        PixelsBuilder::new(width, height, surface_texture).build().await
     }
-
-    /// Asynchronously create a pixel buffer instance with default options.
-    ///
-    /// See [`Pixels::new`] for more information.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # async fn test() -> Result<(), pixels::Error> {
-    /// # use pixels::Pixels;
-    /// # let window = pixels_mocks::Rwh;
-    /// # let surface_texture = pixels::SurfaceTexture::new(320, 240, &window);
-    /// let mut pixels = Pixels::new_async(320, 240, surface_texture).await?;
-    /// # Ok::<(), pixels::Error>(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a [`wgpu::Adapter`] cannot be found.
-    ///
-    /// # Panics
-    ///
-    /// Panics when `width` or `height` are 0.
-    pub async fn new_async(
-        width: u32,
-        height: u32,
-        surface_texture: SurfaceTexture,
-    ) -> Result<Self, Error> {
-        PixelsBuilder::new(width, height, surface_texture)
-            .build_async()
-            .await
-    }
-
+    
     /// Change the clear color.
     ///
     /// Allows customization of the background color and the border drawn for non-integer scale
@@ -734,7 +698,7 @@ impl<'win> Pixels<'win> {
     }
 
     /// Provides access to the internal [`PixelsContext`].
-    pub fn context(&self) -> &PixelsContext<'win> {
+    pub fn context(&self) -> &PixelsContext<'static> {
         &self.context
     }
 

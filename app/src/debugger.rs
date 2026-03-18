@@ -373,10 +373,6 @@ impl Debugger {
         self.run = false;
     }
 
-    pub fn set_running(&mut self) {
-        self.run = true;
-    }
-
     pub fn error(&mut self, err: CycleError) {
         self.pause();
         self.error = Some(err.to_string());

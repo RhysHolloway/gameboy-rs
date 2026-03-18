@@ -2,9 +2,9 @@ use super::renderers::{ScalingMatrix, ScalingRenderer};
 use super::{Error, Pixels, PixelsContext, SurfaceSize, SurfaceTexture, TextureError};
 
 /// A builder to help create customized pixel buffers.
-pub struct PixelsBuilder<'req, 'dev, 'win> {
-    request_adapter_options: Option<wgpu::RequestAdapterOptions<'req, 'win>>,
-    device_descriptor: Option<wgpu::DeviceDescriptor<'dev>>,
+pub struct PixelsBuilder {
+    request_adapter_options: Option<wgpu::RequestAdapterOptions<'static, 'static>>,
+    device_descriptor: Option<wgpu::DeviceDescriptor<'static>>,
     backend: wgpu::Backends,
     width: u32,
     height: u32,
@@ -18,7 +18,7 @@ pub struct PixelsBuilder<'req, 'dev, 'win> {
     blend_state: wgpu::BlendState,
 }
 
-impl<'req, 'dev, 'win> PixelsBuilder<'req, 'dev, 'win> {
+impl PixelsBuilder {
     /// Create a builder that can be finalized into a [`Pixels`] pixel buffer.
     ///
     /// # Examples
@@ -44,13 +44,13 @@ impl<'req, 'dev, 'win> PixelsBuilder<'req, 'dev, 'win> {
     ///
     /// Panics when `width` or `height` are 0.
     pub fn new(width: u32, height: u32, surface_texture: SurfaceTexture) -> Self {
-        assert!(width > 0);
-        assert!(height > 0);
-
         Self {
             request_adapter_options: None,
             device_descriptor: None,
-            backend: wgpu::Backends::all(),
+            backend: wgpu::Backends::VULKAN
+                | wgpu::Backends::METAL
+                | wgpu::Backends::DX12
+                | wgpu::Backends::GL,
             width,
             height,
             _pixel_aspect_ratio: 1.0,
@@ -67,14 +67,14 @@ impl<'req, 'dev, 'win> PixelsBuilder<'req, 'dev, 'win> {
     /// Add options for requesting a [`wgpu::Adapter`].
     pub fn request_adapter_options(
         mut self,
-        request_adapter_options: wgpu::RequestAdapterOptions<'req, 'win>,
+        request_adapter_options: wgpu::RequestAdapterOptions<'static, 'static>,
     ) -> Self {
         self.request_adapter_options = Some(request_adapter_options);
         self
     }
 
     /// Add options for requesting a [`wgpu::Device`].
-    pub fn device_descriptor(mut self, device_descriptor: wgpu::DeviceDescriptor<'dev>) -> Self {
+    pub fn device_descriptor(mut self, device_descriptor: wgpu::DeviceDescriptor<'static>) -> Self {
         self.device_descriptor = Some(device_descriptor);
         self
     }
@@ -240,23 +240,43 @@ impl<'req, 'dev, 'win> PixelsBuilder<'req, 'dev, 'win> {
     /// # Errors
     ///
     /// Returns an error when a [`wgpu::Adapter`] cannot be found.
-    async fn build_impl(self) -> Result<Pixels<'win>, Error> {
+    pub async fn build(self) -> Result<Pixels, Error> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: self.backend,
             ..Default::default()
         });
 
-        // TODO: Use `options.pixel_aspect_ratio` to stretch the scaled texture
         let surface = instance.create_surface(self.surface_texture.window)?;
         let compatible_surface = Some(&surface);
         let request_adapter_options = &self.request_adapter_options;
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, compatible_surface).await.map_err(Error::AdapterNotFound)?;
+        let adapter = match wgpu::util::initialize_adapter_from_env(&instance, compatible_surface)
+        {
+            Ok(adapter) => adapter,
+            Err(..) => instance
+                .request_adapter(request_adapter_options.as_ref().unwrap_or(
+                    &wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::from_env().unwrap_or_default(),
+                        force_fallback_adapter: false,
+                        compatible_surface,
+                    },
+                ))
+                .await
+                .map_err(Error::AdapterNotFound)?,
+        };
 
         let device_descriptor = self
             .device_descriptor
             .unwrap_or_else(|| wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
-                ..wgpu::DeviceDescriptor::default()
+                label: None,
+                required_features: wgpu::Features::empty(),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                required_limits: if cfg!(target_arch = "wasm32") {
+                    wgpu::Limits::downlevel_webgl2_defaults()
+                } else {
+                    wgpu::Limits::default()
+                },
+                memory_hints: Default::default(),
+                trace: wgpu::Trace::Off,
             });
 
         let (device, queue) = adapter.request_device(&device_descriptor).await?;
@@ -324,45 +344,6 @@ impl<'req, 'dev, 'win> PixelsBuilder<'req, 'dev, 'win> {
         pixels.reconfigure_surface();
 
         Ok(pixels)
-    }
-
-    /// Create a pixel buffer from the options builder.
-    ///
-    /// This method blocks the current thread, making it unusable on Web targets. Use
-    /// [`PixelsBuilder::build_async`] for a non-blocking alternative.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a [`wgpu::Adapter`] or [`wgpu::Device`] cannot be found.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn build(self) -> Result<Pixels<'win>, Error> {
-        pollster::block_on(self.build_impl())
-    }
-
-    /// Create a pixel buffer from the options builder without blocking the current thread.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use pixels::wgpu::{Backends, DeviceDescriptor, Limits};
-    ///
-    /// # async fn test() -> Result<(), pixels::Error> {
-    /// # use pixels::PixelsBuilder;
-    /// # let window = pixels_mocks::Rwh;
-    /// # let surface_texture = pixels::SurfaceTexture::new(256, 240, &window);
-    /// let mut pixels = PixelsBuilder::new(256, 240, surface_texture)
-    ///     .enable_vsync(false)
-    ///     .build_async()
-    ///     .await?;
-    /// # Ok::<(), pixels::Error>(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a [`wgpu::Adapter`] or [`wgpu::Device`] cannot be found.
-    pub async fn build_async(self) -> Result<Pixels<'win>, Error> {
-        self.build_impl().await
     }
 }
 

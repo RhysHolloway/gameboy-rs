@@ -8,4 +8,6 @@ wgpu = { version = "27" }
 winit = { version = "0.30" }
 glam = { version = "0.32", features = ["bytemuck"] }
 bytemuck = "1"
-pollster = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "27", features = ["webgl"] }

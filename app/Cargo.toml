@@ -1,0 +1,21 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gameboy-core = { path = "../gameboy-core" }
+
+pixels = { path = "../pixels" }
+
+egui = "0.33"
+egui-wgpu = "0.33"
+
+tracing = "0.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+egui-winit = "0.33"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+egui-winit = { version = "0.33", default-features = false, features = ["links"] }
+web-time = "1"
