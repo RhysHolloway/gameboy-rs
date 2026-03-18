@@ -109,7 +109,7 @@ impl Ppu {
 
     pub fn cycle(&mut self, int: &mut u8, cycles: &Cycles) -> Result<bool, MemoryError> {
         let mut render = false;
-        for _ in 0..cycles.m() {
+        for _ in 0..cycles.t() {
             self.clock += 1;
             match self.stat & 0b11 {
                 Self::HBLANK => {
@@ -130,6 +130,7 @@ impl Ppu {
                         self.update_ly(int, self.ly().wrapping_add(1));
                         if self.ly() >= Self::SCREEN_HEIGHT as u8 + 10 {
                             self.update_ly(int, 0);
+                            self.window_line = 0;
                             self.set_mode(int, Self::OAM)?;
                         }
                     }
@@ -180,7 +181,18 @@ impl Ppu {
 
     pub fn write_reg(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
         match address {
-            Self::ADDRESS_LCDC => self.lcdc = value,
+            Self::ADDRESS_LCDC => {
+                let was_enabled = self.lcdc & 0x80 != 0;
+                self.lcdc = value;
+                let enabled = self.lcdc & 0x80 != 0;
+                if was_enabled != enabled {
+                    self.stat &= 0xF8;
+                    self.stat |= if was_enabled { Self::HBLANK } else { Self::OAM };
+                    self.clock = 0;
+                    self.ly = 0;
+                    self.window_line = 0;
+                }
+            }
             Self::ADDRESS_STAT => self.stat = (self.stat & 0x07) | (value & 0x78),
             Self::ADDRESS_SCY => self.scy = value,
             Self::ADDRESS_SCX => self.scx = value,
@@ -314,8 +326,9 @@ impl Ppu {
 
                 let tile_x = (pixel_x / 8) & 31;
                 let tile_y = (pixel_y / 8) & 31;
-                let tile_index_addr = map_base + tile_y * 32 + tile_x;
-                let tile_index = self.vram.read_offset(tile_index_addr as usize)?;
+                let tile_index = self
+                    .vram
+                    .read_offset((map_base + tile_y * 32 + tile_x) as usize)?;
                 let tile_addr = if self.lcdc & 0x10 != 0 {
                     tile_data_base + (tile_index as u16) * 16
                 } else {
