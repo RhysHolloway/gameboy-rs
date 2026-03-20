@@ -1,62 +1,209 @@
 pub extern crate pixels;
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use egui_winit::EventResponse;
 use gameboy_core::util::Controls;
 
 use pixels::winit::event_loop::EventLoopProxy;
-#[cfg(target_family = "wasm")]
-use web_time::Instant;
-
-#[cfg(not(target_family = "wasm"))]
-use std::time::Instant;
 
 use pixels::winit::keyboard::{Key, NamedKey};
-use tracing::error;
+use tracing::{error, info};
 
 use pixels::winit::{
     application::ApplicationHandler,
     event::{ElementState, KeyEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    window::{Window, WindowId},
+    window::WindowId,
     {event::WindowEvent, event_loop::ControlFlow},
 };
-
-use pixels::wgpu;
 
 use crate::debugger::Debugger;
 use gameboy_core::{Cartridge, Cycles, GameboyColor};
 
 mod debugger;
+mod graphics;
 
-pub struct Application<W: CreateWindow> {
+pub use graphics::GraphicsState;
+
+pub struct Application<P: EmulatorPlatform> {
     pub emulator: Emulator,
     pub cartridge: Option<Box<dyn Cartridge + 'static>>,
     graphics: Option<GraphicsState>,
-    proxy: Arc<EventLoopProxy<GraphicsState>>,
-    event_loop: Option<EventLoop<GraphicsState>>,
-    _w: std::marker::PhantomData<W>,
+    audio: Option<Audio>,
+    proxy: Arc<EventLoopProxy<EmulatorEvent>>,
+    event_loop: Option<EventLoop<EmulatorEvent>>,
+    _p: std::marker::PhantomData<P>,
 }
 
-impl<W: CreateWindow> Application<W> {
-    pub fn new(debugger: bool) -> Self {
-        let event_loop = EventLoop::<GraphicsState>::with_user_event().build().unwrap_or_else(|e| panic!("Could not create event loop with error {e}"));
+struct Audio {
+    device: cpal::Device,
+}
+
+impl<P: EmulatorPlatform> Application<P> {
+    pub fn new(debugger: bool, rom: Option<Vec<u8>>) -> Self {
+        let event_loop = EventLoop::<EmulatorEvent>::with_user_event()
+            .build()
+            .unwrap_or_else(|e| panic!("Could not create event loop with error {e}"));
         event_loop.set_control_flow(ControlFlow::Poll);
-        Self {
+        let mut this = Self {
             emulator: Emulator::new(debugger),
             cartridge: None,
             graphics: None,
             proxy: Arc::new(event_loop.create_proxy()),
             event_loop: Some(event_loop),
-            _w: std::marker::PhantomData,
+            _p: std::marker::PhantomData,
+            audio: None,
+        };
+        if let Some(rom) = rom {
+            this.open_rom(rom);
         }
+        this
     }
 
     pub fn run(mut self) {
         let el = self.event_loop.take();
-        el.unwrap().run_app(&mut self).unwrap_or_else(|e| panic!("Could not run event loop with error {e}"));
+        el.unwrap()
+            .run_app(&mut self)
+            .unwrap_or_else(|e| panic!("Could not run event loop with error {e}"));
+    }
+
+    fn open_rom(&mut self, rom: Vec<u8>) {
+        match GameboyColor::load(rom) {
+            Ok(cart) => {
+                self.emulator.gameboy.reset(&*cart);
+                if let Some(graphics) = self.graphics.as_mut() {
+                    graphics.load(&*cart);
+                }
+                self.cartridge = Some(cart);
+            }
+            Err(err) => error!("Could not load cartridge with error: {err}"),
+        }
+    }
+
+    fn open_ram(&mut self, ram: Vec<u8>) {
+        if let Some(cart) = self.cartridge.as_mut() {
+            if ram.len() != cart.ram().len() {
+                error!(
+                    "Could not load RAM with size {}, expected {}",
+                    ram.len(),
+                    cart.ram().len()
+                );
+                return;
+            }
+            cart.ram_mut().copy_from_slice(&ram);
+            self.emulator.gameboy.reset(&**cart);
+        }
+    }
+    fn open(proxy: &Arc<EventLoopProxy<EmulatorEvent>>, kind: DataType) {
+        let proxy = proxy.clone();
+        P::run_async(async move {
+            if let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter(
+                    match kind {
+                        DataType::Rom => "Gameboy ROM",
+                        DataType::Ram => "Gameboy RAM Save",
+                    },
+                    match kind {
+                        DataType::Rom => &["gb", "gbc"],
+                        DataType::Ram => &["rsav"],
+                    },
+                )
+                .pick_file()
+                .await
+            {
+                if let Err(err) = proxy.send_event(EmulatorEvent::OpenFile(file.read().await, kind))
+                {
+                    error!("Could not send open file event with error: {err}");
+                }
+            }
+        });
+    }
+
+    fn save(name: String, data: Vec<u8>) {
+        P::run_async(async move {
+            if let Some(handle) = rfd::AsyncFileDialog::new()
+                .set_file_name(name)
+                .add_filter("Gameboy Save", &["rsav"])
+                .save_file()
+                .await
+            {
+                if let Err(err) = handle.write(&data).await {
+                    error!("Could not save file with error: {err}");
+                }
+            }
+        });
+    }
+
+    fn try_create_audio(&mut self) {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        if self.audio.is_some() {
+            return;
+        }
+
+        let host = cpal::default_host();
+
+        let device = host.default_output_device();
+
+        let device = match device {
+            Some(device) => device,
+            None => {
+                error!("No output audio device found");
+                return;
+            }
+        };
+
+        let config = match device.default_output_config() {
+            Ok(config) => config,
+            Err(err) => {
+                error!("No default output audio config found: {err}");
+                return;
+            }
+        }
+        .config();
+
+        info!(
+            "Using audio device: {}, with config: {:?}",
+            device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "Unknown".to_string()),
+            config
+        );
+
+        self.audio = Some(Audio { device })
+
+        // match device.build_output_stream(&config, |data, _| {
+        //     let data = self.emulator.gameboy.bus.apu.mix();
+        // }, |e| {
+        //     error!("Audio stream error: {e}");
+        // }, None) {
+        //     Ok(stream) => {
+        //         stream.play().unwrap_or_else(|e| error!("Failed to play audio stream: {e}"));
+        //         self.audio = Some(stream);
+        //     }
+        //     Err(err) => error!("Failed to build output audio stream: {err}"),
+        // }
+    }
+
+    fn menu(
+        proxy: &Arc<EventLoopProxy<EmulatorEvent>>,
+        cartridge: Option<&dyn Cartridge>,
+        ctx: &egui::Context,
+    ) {
+        egui::Window::new("Menu").show(ctx, |ui| {
+            if ui.button("Open ROM").clicked() {
+                Self::open(proxy, DataType::Rom);
+            }
+            if let Some(cart) = cartridge {
+                ui.separator();
+                if ui.button("Save RAM").clicked() {
+                    Self::save(format!("{}.rsav", cart.title()), cart.ram().to_vec());
+                }
+                if ui.button("Load RAM").clicked() {
+                    Self::open(proxy, DataType::Ram);
+                }
+            }
+        });
     }
 }
 
@@ -68,38 +215,34 @@ pub struct Emulator {
 pub enum ApplicationUpdate {
     Continue,
     Render,
-    WaitUntil(Instant),
+    WaitUntil(graphics::Instant),
     Exit,
 }
 
 impl Emulator {
     pub fn new(debugger: bool) -> Self {
-        match debugger {
-            true => {
+        let mut gameboy = GameboyColor::default();
+        Self {
+            debugger: debugger.then(|| {
                 let mut debugger = Debugger::new();
-                Self {
-                    gameboy: GameboyColor::with_serial_callback(debugger.create_serial_callback()),
-                    debugger: Some(debugger),
-                }
-            },
-            false => {
-                Self {
-                    gameboy: GameboyColor::default(),
-                    debugger: None,
-                }
-            },
+                gameboy
+                    .bus
+                    .set_serial_callback(debugger.create_serial_callback());
+                debugger
+            }),
+            gameboy,
         }
     }
 
     pub fn update<const LOG: bool>(
         &mut self,
         cart: &mut dyn Cartridge,
-        next: Option<&mut Instant>,
+        next: Option<&mut graphics::Instant>,
     ) -> ApplicationUpdate {
         let mut update = ApplicationUpdate::Continue;
 
         let max_cycles = next.map(|next| {
-            let new = Instant::now();
+            let new = graphics::Instant::now();
             let between = new - *next;
             *next += GraphicsState::CYCLE_TIME;
             update = ApplicationUpdate::WaitUntil(*next);
@@ -146,66 +289,39 @@ impl Emulator {
     }
 }
 
-pub struct GraphicsState {
-    window: Arc<Window>,
-    pixels: pixels::Pixels,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
-    egui_shapes: Vec<egui::epaint::ClippedPrimitive>,
-    next: Instant,
+pub enum DataType {
+    Rom,
+    Ram,
 }
 
-impl GraphicsState {
-    const CYCLE_TIME: Duration = Duration::new(0, 16600000);
-    const CLOCK_SPEED: usize = 4194304;
-    // const FRAME_RATE: usize = 60;
-    // const CYCLES_PER_FRAME: usize = Self::CLOCK_SPEED / Self::FRAME_RATE;
-
-    pub async fn new(window: Window) -> GraphicsState {
-        let window = Arc::new(window);
-
-        let mut pixels = pixels::Pixels::new(160, 144, pixels::SurfaceTexture::new(&window)).await
-            .unwrap_or_else(|e| panic!("Could not initialize graphics with error: {e}"));
-
-        pixels.clear_color(wgpu::Color::GREEN);
-
-        let egui_state = egui_winit::State::new(
-            Default::default(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(
-            pixels.device(),
-            pixels.render_texture_format(),
-            Default::default(),
-        );
-
-        GraphicsState {
-            window: window.clone(),
-            pixels,
-            egui_state,
-            egui_renderer,
-            egui_shapes: Vec::new(),
-            next: Instant::now(),
-        }
-    }
-
+pub enum EmulatorEvent {
+    CreateGraphics(GraphicsState),
+    OpenFile(Vec<u8>, DataType),
 }
 
-pub trait CreateWindow {
-    fn create_window(proxy: &Arc<EventLoopProxy<GraphicsState>>, event_loop: &ActiveEventLoop);
+pub trait EmulatorPlatform {
+    fn run_async(future: impl std::future::Future<Output = ()> + Send + 'static);
+
+    fn create_window(proxy: &Arc<EventLoopProxy<EmulatorEvent>>, event_loop: &ActiveEventLoop);
 }
 
-impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
+impl<E: EmulatorPlatform> ApplicationHandler<EmulatorEvent> for Application<E> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        W::create_window(&self.proxy, event_loop);
+        E::create_window(&self.proxy, event_loop);
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, event: GraphicsState) {
-        self.graphics = Some(event);
+    fn user_event(&mut self, _: &ActiveEventLoop, event: EmulatorEvent) {
+        match event {
+            EmulatorEvent::CreateGraphics(graphics) => {
+                self.graphics = Some(graphics);
+                self.try_create_audio();
+                // self.audio = Some(crate::audio::AudioState::new());
+            }
+            EmulatorEvent::OpenFile(data, kind) => match kind {
+                DataType::Rom => self.open_rom(data),
+                DataType::Ram => self.open_ram(data),
+            },
+        }
     }
 
     fn window_event(
@@ -215,28 +331,11 @@ impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
         event: WindowEvent,
     ) {
         if let Some(graphics) = self.graphics.as_mut() {
-            let EventResponse { repaint, .. } = graphics
-                .egui_state
-                .on_window_event(&graphics.window, &event);
-            if repaint {
-                graphics.window.request_redraw();
+            if !graphics.window_event(event_loop, window_id, &event) {
+                return;
             }
         }
         match event {
-            WindowEvent::CloseRequested => {
-                if let Some(window) = self.graphics.as_ref().map(|g| &g.window) {
-                    if window.id() == window_id {
-                        event_loop.exit();
-                    }
-                }
-            }
-            WindowEvent::Resized(new_size) => {
-                if let Some(graphics) = self.graphics.as_mut() {
-                    if let Err(e) = graphics.pixels.resize(new_size) {
-                        error!("Failed to resize pixels: {}", e);
-                    }
-                }
-            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -283,121 +382,22 @@ impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
                         }
                         ApplicationUpdate::Render => {
                             if let Some(graphics) = self.graphics.as_mut() {
-                                self.emulator
-                                    .gameboy
-                                    .frame_to_rgba(graphics.pixels.frame_mut());
+                                graphics.update_frame(&self.emulator.gameboy);
                             }
                         }
                     }
                 }
 
                 if let Some(graphics) = self.graphics.as_mut() {
-                    if let Some((debugger, cart)) =
-                        self.emulator.debugger.as_mut().zip(self.cartridge.as_deref())
-                    {
-                        let raw_input = graphics.egui_state.take_egui_input(&graphics.window);
-
-                        let egui_output = graphics.egui_state.egui_ctx().run(raw_input, |ctx| {
-                            debugger.window(
-                                cart,
-                                &mut self.emulator.gameboy,
-                                ctx,
-                                graphics.window.inner_size(),
-                            );
-                        });
-
-                        graphics
-                            .egui_state
-                            .handle_platform_output(&graphics.window, egui_output.platform_output);
-
-                        for (id, image_delta) in egui_output.textures_delta.set {
-                            graphics.egui_renderer.update_texture(
-                                graphics.pixels.device(),
-                                graphics.pixels.queue(),
-                                id,
-                                &image_delta,
-                            );
-                        }
-
-                        for id in egui_output.textures_delta.free {
-                            graphics.egui_renderer.free_texture(&id);
-                        }
-
-                        let pixels_per_point = graphics.egui_state.egui_ctx().pixels_per_point();
-                        graphics.egui_shapes = graphics
-                            .egui_state
-                            .egui_ctx()
-                            .tessellate(egui_output.shapes, pixels_per_point);
-                    }
-
-                    let window = graphics.window.as_ref();
-                    window.pre_present_notify();
-
-                    graphics
-                        .pixels
-                        .render_with(|encoder, output, ctx| {
-                            ctx.scaling_renderer.render(encoder, output);
-
-                            if self.emulator.debugger.is_none() {
-                                return Ok(());
-                            }
-
-                            let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                                pixels_per_point: window.scale_factor() as f32,
-                                size_in_pixels: window.inner_size().into(),
-                            };
-
-                            let cmd_buffers = graphics.egui_renderer.update_buffers(
-                                &ctx.device,
-                                &ctx.queue,
-                                encoder,
-                                &graphics.egui_shapes,
-                                &screen_descriptor,
-                            );
-
-                            ctx.queue.submit(cmd_buffers);
-
-                            let mut egui_pass = encoder
-                                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                                    label: Some("egui"),
-                                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                        view: &output,
-                                        resolve_target: None,
-                                        ops: wgpu::Operations {
-                                            load: wgpu::LoadOp::Load,
-                                            store: wgpu::StoreOp::Store,
-                                        },
-                                        depth_slice: None,
-                                    })],
-                                    depth_stencil_attachment: None,
-                                    timestamp_writes: None,
-                                    occlusion_query_set: None,
-                                })
-                                .forget_lifetime();
-
-                            graphics.egui_renderer.render(
-                                &mut egui_pass,
-                                &graphics.egui_shapes,
-                                &screen_descriptor,
-                            );
-
-                            Ok(())
-                        })
-                        .unwrap();
+                    graphics.redraw::<E>(
+                        &self.proxy,
+                        &mut self.emulator,
+                        self.cartridge.as_deref(),
+                    );
                 }
             }
             WindowEvent::DroppedFile(path) => match std::fs::read(path) {
-                Ok(rom) => {
-                    let cart = GameboyColor::load(rom);
-                    self.emulator.gameboy.reset(&*cart);
-                    self.cartridge = Some(cart);
-                    if let Some(graphics) = self.graphics.as_mut() {
-                        graphics.window.set_title(&format!(
-                            "Gameboy Emulator - {}",
-                            self.cartridge.as_ref().unwrap().title()
-                        ));
-                    }
-                }
+                Ok(rom) => self.open_rom(rom),
                 Err(err) => error!("Could not open ROM with error: {err}"),
             },
             _ => (),

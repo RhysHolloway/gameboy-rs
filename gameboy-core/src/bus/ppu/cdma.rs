@@ -1,5 +1,3 @@
-use std::f32::consts::E;
-
 use crate::bus::Bus;
 use crate::bus::ppu::Ppu;
 use crate::cpu::{CycleResult, ExecutionType};
@@ -8,10 +6,17 @@ use crate::{Cartridge, Cycles, MemoryError, Width};
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Cdma {
+    hdma12: [u8; 2],
+    hdma34: [u8; 2],
     hdma5: u8,
+    transfer: Option<CdmaState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CdmaState {
     source: Width,
     destination: Width,
-    index: Option<Width>,
+    index: Width,
 }
 
 impl Cdma {
@@ -22,34 +27,35 @@ impl Cdma {
     pub const ADDRESS_HDMA5: Address = Address::new(0xFF55); // CGB only, HDMA length/mode
 
     pub const fn is_active(&self, ppu: &Ppu) -> bool {
-        self.index.is_some() && (!self.hblank_mode() || ppu.mode() == Ppu::HBLANK)
+        self.transfer.is_some() && (!self.hblank_mode() || ppu.mode() == Ppu::HBLANK)
     }
 
     pub(crate) const fn read(&self, address: &Address) -> Result<u8, MemoryError> {
         match address {
-            &Self::ADDRESS_HDMA5 => Ok(self.hdma5 | if self.index.is_some() { 0 } else { 0x80 }),
+            &Self::ADDRESS_HDMA5 => Ok(self.hdma5 | if self.transfer.is_some() { 0x80 } else { 0 }),
             _ => Err(MemoryError::Read("CGB DMA", address.index())),
         }
     }
 
     pub(crate) const fn write(&mut self, address: &Address, value: u8) {
         match address {
-            &Self::ADDRESS_HDMA1 => self.source = self.source & 0x00FF | ((value as u16) << 8),
-            &Self::ADDRESS_HDMA2 => self.source = self.source & 0xFF00 | (value as u16 & 0xF0),
-            &Self::ADDRESS_HDMA3 => {
-                self.destination = self.destination & 0x00FF | ((value as u16 & 0xF) << 8)
-            }
-            &Self::ADDRESS_HDMA4 => {
-                self.destination = self.destination & 0xFF00 | (value as u16 & 0xF0)
-            }
-            &Self::ADDRESS_HDMA5 => match self.index {
-                Some(..) => {
-                    self.hdma5 = value & 0x7F;
-                    self.index = None;
+            &Self::ADDRESS_HDMA1 => self.hdma12[0] = value,
+            &Self::ADDRESS_HDMA2 => self.hdma12[1] = value & 0xF0,
+            &Self::ADDRESS_HDMA3 => self.hdma34[0] = value & 0x1F,
+            &Self::ADDRESS_HDMA4 => self.hdma34[1] = value & 0xF0,
+            &Self::ADDRESS_HDMA5 => match self.transfer.is_some() && self.hblank_mode() {
+                true => {
+                    if value & 0x80 == 0 {
+                        self.transfer = None;
+                    }
                 }
-                None => {
+                false => {
                     self.hdma5 = value & 0x7F;
-                    self.index = Some(0);
+                    self.transfer = Some(CdmaState {
+                        source: u16::from_be_bytes(self.hdma12),
+                        destination: u16::from_be_bytes(self.hdma34),
+                        index: 0,
+                    });
                 }
             },
             _ => unreachable!(),
@@ -76,7 +82,12 @@ impl Cdma {
         let length = self.length();
         let hblank_mode = self.hblank_mode();
         let mut vram_cycles: usize = 0;
-        if let Some(index) = self.index.as_mut() {
+        if let Some(CdmaState {
+            source,
+            destination,
+            index,
+        }) = self.transfer.as_mut()
+        {
             vram_cycles = if hblank_mode {
                 0x10
             } else {
@@ -84,14 +95,14 @@ impl Cdma {
             } as usize;
             for _ in 0..vram_cycles {
                 let value = bus
-                    .read::<true>(cart, Address::new(self.source + *index))
+                    .read::<true>(cart, Address::new(*source + *index))
                     .unwrap_or(0xFF);
                 bus.ppu
                     .vram
-                    .write_offset(Address::new(self.destination + *index), value)?;
+                    .write((*destination + *index) as usize, value)?;
                 *index += 1;
                 if *index >= length {
-                    self.index = None;
+                    self.transfer = None;
                     break;
                 }
             }

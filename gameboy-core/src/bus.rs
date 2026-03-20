@@ -6,21 +6,23 @@ mod serial;
 mod timer;
 mod wram;
 mod ir;
+mod apu;
 
-use crate::{Cartridge, Width};
+use crate::{Cartridge, Memory, Width};
 use crate::cpu::CycleResult;
-use crate::util::{Address, Controls, MemoryError, OffsetMemory};
+use crate::util::{Address, Controls, MemoryError};
 pub use interrupts::*;
 
 pub struct Bus {
     wram: wram::Wram,
     pub ppu: ppu::Ppu,
     pub timer: timer::Timer,
-    hram: OffsetMemory<0xFF80, 0x7F>,
+    hram: Memory<0x7F>,
     joypad: joypad::Joypad,
     dma: ppu::Dma,
     cdma: ppu::Cdma,
     ir: ir::Ir,
+    pub apu: apu::APU,
     pub serial: serial::SerialState,
     pub interrupts: interrupts::Interrupts,
     pub cgb: cgb::Cgb,
@@ -29,7 +31,7 @@ pub struct Bus {
 impl Default for Bus {
     fn default() -> Self {
         Self {
-            hram: OffsetMemory::new("High RAM"),
+            hram: Memory::new("High RAM"),
             wram: wram::Wram::default(),
             interrupts: Default::default(),
             ppu: ppu::Ppu::default(),
@@ -40,6 +42,7 @@ impl Default for Bus {
             ir: ir::Ir::default(),
             cdma: ppu::Cdma::default(),
             cgb: cgb::Cgb::default(),
+            apu: apu::APU::default(),
         }
     }
 }
@@ -48,8 +51,8 @@ pub type Bank = u8;
 
 impl Bus {
 
-    pub fn with_serial_callback(callback: Box<dyn FnMut(u8)>) -> Self {
-        Self { serial: serial::SerialState::with_callback(callback), ..Self::default() }
+    pub fn set_serial_callback(&mut self, callback: Box<dyn FnMut(u8)>) {
+        self.serial.set_callback(callback);
     }
 
     pub fn load(&mut self, cart: &dyn Cartridge) {
@@ -62,21 +65,21 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.read_vram(address)?, // video ram
             0xC000..=0xDFFF => self.wram.read(address - 0xC000)?, // wram
             0xE000..=0xFDFF => self.wram.read(address - 0xE000)?, // wram echo during DMA
-            0xFE00..=0xFE9F => self.ppu.read_voam::<DMA>(address)?, // object attribute memory
+            0xFE00..=0xFE9F => self.ppu.read_voam::<DMA>(&address)?, // object attribute memory
             // 0xFEA0..=0xFEFF => self.cgb.=, // unusable
             // 0xFF40..=0xFF4B => self.ppu.read_reg(address),
             0xFF00 => self.joypad.read(),
             0xFF01 | 0xFF02 => self.serial.read(&address),
             0xFF04..=0xFF07 => self.timer.read(&address),
             0xFF0F => self.interrupts.i,
-            0xFF10..=0xFF26 => 0xFF, // self.audio.read(address)?,
+            0xFF10..=0xFF26 => self.apu.read(&address)?,
             0xFF38..=0xFF3F => 0xFF, // self.audio.read(address)?,
             0xFF40..0xFF46 | 0xFF47..=0xFF4B | 0xFF4F | 0xFF68..=0xFF6C => self.ppu.read_reg(&self.cgb, &address)?,
             0xFF46 => self.dma.read(),
             0xFF4C | 0xFF4D | 0xFF51..=0xFF55 => self.cgb.read_mapped(&address)?,
             0xFF56 => self.ir.read(),
             0xFF70 => self.wram.read_bank(),
-            0xFF80..=0xFFFE => self.hram.read_mapped(address)?,
+            0xFF80..=0xFFFE => self.hram.read(address.index() - 0xFF80)?,
             0xFFFF => self.interrupts.ie,
             _ => return Err(MemoryError::Read("Inaccessible", address.index())),
         })
@@ -100,11 +103,11 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.write_vram(address, value)?,
             0xC000..=0xDFFF => self.wram.write(address - 0xC000, value)?,
             0xE000..=0xFDFF => self.wram.write(address - 0xE000, value)?, // wram echo during DMA
-            0xFE00..=0xFE9F => self.ppu.write_voam::<DMA>(address, value)?,
+            0xFE00..=0xFE9F => self.ppu.write_voam::<DMA>(&address, value)?,
             0xFF00 => self.joypad.write(value),
             0xFF01 | 0xFF02 => self.serial.write(&address, value),
             0xFF04..=0xFF07 => self.timer.write(&address, value),
-            0xFF10..=0xFF26 => (), // self.audio.write(address, value)?,
+            0xFF10..=0xFF26 => self.apu.write(&address, value),
             0xFF30..=0xFF3F => (), // self.audio.write(address, value)?,
             0xFF0F => self.interrupts.i = value & 0x1F,
             0xFF40..0xFF46 | 0xFF47..=0xFF4B | 0xFF4F | 0xFF68..=0xFF6C => {
@@ -115,7 +118,7 @@ impl Bus {
             // 0xFF00..=0xFF7F => self.io.write(address - 0xFF00, value).map_err(From::from),
             0xFF56 => self.ir.write(value),
             0xFF70 => self.wram.write_bank(value),
-            0xFF80..=0xFFFE => self.hram.write_mapped(address, value)?,
+            0xFF80..=0xFFFE => self.hram.write(address.index() - 0xFF80, value)?,
             0xFFFF => self.interrupts.ie = value,
             _ => {
                 return Err(MemoryError::Write(
@@ -160,6 +163,7 @@ impl Bus {
         let render = self.ppu.cycle(&mut self.interrupts.i, &self.cgb, &slow)?;
         self.dma.cycle(&slow, cart, self)?;
         self.serial.cycle(&mut self.interrupts.i, &fast);
+        self.apu.cycle(&fast);
         Ok(render)
     }
 

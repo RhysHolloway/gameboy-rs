@@ -3,9 +3,22 @@ mod mbc1;
 mod mbc0;
 mod mbc_funcs;
 
-use std::ops::{Index, IndexMut};
-
 use crate::{Address, MemoryError};
+
+#[derive(Debug)]
+pub enum CartridgeError {
+    NoHeader,
+    NotSupported(u8),
+}
+
+impl std::fmt::Display for CartridgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoHeader => write!(f, "Cartridge has an invalid header!"),
+            Self::NotSupported(t) => write!(f, "Cartridge type 0x{t:02X} is not supported!"),
+        }
+    }
+}
 
 // pub struct BasicCartridge<D: AsRef<[u8]>> {
 //     data: D,
@@ -82,18 +95,18 @@ use crate::{Address, MemoryError};
 //     }
 // }
 
-pub fn load(data: impl AsRef<[u8]>) -> Box<dyn Cartridge + 'static> {
+pub fn load(data: impl AsRef<[u8]>) -> Result<Box<dyn Cartridge + 'static>, CartridgeError> {
     let data = data.as_ref();
     if data.len() < 0x150 {
-        panic!("ROM data is too small to be valid!");
+        return Err(CartridgeError::NoHeader);
     }
     let cartridge_type = data[0x147];
-    match cartridge_type {
+    Ok(match cartridge_type {
         0x00 => Box::new(mbc0::MBC0::new(data)),
         0x01..=0x03 => Box::new(mbc1::MBC1::new(data)),
         0x0F..=0x13 => Box::new(mbc3::MBC3::new(data)),
-        _ => panic!("Unsupported cartridge type: 0x{:02X}", cartridge_type),
-    }
+        _ => return Err(CartridgeError::NotSupported(cartridge_type)),
+    })
 }
 
 pub trait Cartridge  {
@@ -113,4 +126,8 @@ pub trait Cartridge  {
     fn write(&mut self, address: Address, value: u8) -> Result<(), MemoryError>;
 
     fn rom(&self) -> &[u8];
+
+    fn ram(&self) -> &[u8];
+
+    fn ram_mut(&mut self) -> &mut [u8];
 }

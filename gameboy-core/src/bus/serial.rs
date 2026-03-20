@@ -23,8 +23,8 @@ impl Default for SerialState {
 
 impl SerialState {
 
-    pub fn with_callback(callback: Box<dyn FnMut(u8)>) -> Self {
-        Self { callback: Some(callback), ..Self::default() }
+    pub fn set_callback(&mut self, callback: Box<dyn FnMut(u8)>) {
+        self.callback = Some(callback);
     }
 
     const ADDR_SB: Address = Address::new(0xFF01);

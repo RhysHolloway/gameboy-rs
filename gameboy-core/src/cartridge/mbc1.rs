@@ -46,6 +46,14 @@ impl super::Cartridge for MBC1 {
         self.rom.as_slice()
     }
 
+    fn ram(&self) -> &[u8] {
+        self.ram.as_slice()
+    }
+
+    fn ram_mut(&mut self) -> &mut [u8] {
+        self.ram.as_mut_slice()
+    }
+
     fn read(&self, address: Address) -> Result<u8, crate::MemoryError> {
         match address.value() {
             0x0000..=0x7FFF => Ok(self.readrom(address.value())),

@@ -42,7 +42,7 @@ impl Dma {
                 let value = bus
                     .read::<true>(cart, self.source + self.index)
                     .unwrap_or(0xFF);
-                bus.ppu.voam.write_offset(Address::new(self.index), value)?;
+                bus.ppu.voam.write(self.index as usize, value)?;
                 self.index += 1;
                 if self.index >= 160 {
                     break;

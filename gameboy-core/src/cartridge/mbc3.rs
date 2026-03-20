@@ -118,6 +118,14 @@ impl Cartridge for MBC3 {
     fn rom(&self) -> &[u8] {
         self.rom.as_slice()
     }
+
+    fn ram(&self) -> &[u8] {
+        self.ram.as_slice()
+    }
+
+    fn ram_mut(&mut self) -> &mut [u8] {
+        self.ram.as_mut_slice()
+    }
     
     fn read(&self, address: Address) -> Result<u8, crate::MemoryError> {
         match address.value() {

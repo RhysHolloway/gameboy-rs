@@ -718,7 +718,7 @@ impl Pixels {
         self.render_texture_format
     }
     
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) -> Result<(), TextureError> {
+    pub fn resize(&mut self, new_size: &winit::dpi::PhysicalSize<u32>) -> Result<(), TextureError> {
         self.resize_surface(new_size.width, new_size.height)
     }
 }

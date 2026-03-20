@@ -51,7 +51,7 @@ impl Debugger {
             history: VecDeque::new(),
         }
     }
-    
+
     pub fn log(&mut self, cart: &dyn Cartridge, gb: &GameboyColor) {
         let address = Address::new(gb.cpu.registers[DReg::PC]);
         // A:00 F:11 B:22 C:33 D:44 E:55 H:66 L:77 SP:8888 PC:9999 PCMEM:AA,BB,CC,DD
@@ -76,8 +76,12 @@ impl Debugger {
 
     pub fn create_serial_callback(&mut self) -> Box<dyn FnMut(u8)> {
         let serial = self.serial.get_or_insert_with(|| {
-        let (sender, receiver) = std::sync::mpsc::channel();
-            Serial { sender, receiver, buffer: Vec::new() }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            Serial {
+                sender,
+                receiver,
+                buffer: Vec::new(),
+            }
         });
         let sender = serial.sender.clone();
         serial.buffer.clear();
@@ -102,6 +106,26 @@ impl Debugger {
         self.history.push_back(result.kind);
         if self.history.len() > 100 {
             self.history.pop_front();
+        }
+
+        self.read_serial();
+    }
+
+    pub fn read_serial(&mut self) {
+        if let Some(Serial {
+            receiver, buffer, ..
+        }) = self.serial.as_mut()
+        {
+            loop {
+                match receiver.try_recv() {
+                    Ok(byte) => buffer.push(byte),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.serial = None;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -211,35 +235,36 @@ impl Debugger {
                 sercol.label("Serial I/O");
                 sercol.separator();
 
-                if let Some(Serial { receiver, buffer, .. }) = self.serial.as_mut() {
-                    while let Ok(byte) = receiver.try_recv() {
-                        buffer.push(byte);
-                    }
+                match self.serial.as_ref() {
+                    Some(Serial { buffer, .. }) => {
+                        if !buffer.is_empty() {
+                            if buffer.len() < 128 {
+                                egui::ScrollArea::vertical().id_salt("serbytes").show(
+                                    sercol,
+                                    |sercol| {
+                                        let bytes =
+                                            buffer.iter().fold(String::new(), |prev, next| {
+                                                format!("{prev}{next:02X}")
+                                            });
+                                        egui::Label::new(format!("{}", bytes))
+                                            .wrap_mode(egui::TextWrapMode::Wrap)
+                                            .ui(sercol);
+                                    },
+                                );
+                                sercol.separator();
+                            }
 
-                    if !buffer.is_empty() {
-                        if buffer.len() < 128 {
-                            egui::ScrollArea::vertical().id_salt("serbytes").show(
+                            egui::ScrollArea::vertical().id_salt("sertext").show(
                                 sercol,
                                 |sercol| {
-                                    let bytes = buffer.iter().fold(String::new(), |prev, next| {
-                                        format!("{prev}{next:02X}")
-                                    });
-                                    egui::Label::new(format!("{}", bytes))
+                                    egui::Label::new(String::from_utf8_lossy(&buffer))
                                         .wrap_mode(egui::TextWrapMode::Wrap)
                                         .ui(sercol);
                                 },
                             );
-                            sercol.separator();
                         }
-
-                        egui::ScrollArea::vertical()
-                            .id_salt("sertext")
-                            .show(sercol, |sercol| {
-                                egui::Label::new(String::from_utf8_lossy(&buffer))
-                                    .wrap_mode(egui::TextWrapMode::Wrap)
-                                    .ui(sercol);
-                            });
-                    } else {
+                    }
+                    None => {
                         sercol.label("Not connected");
                     }
                 }
@@ -311,7 +336,8 @@ impl Debugger {
                                         format!(
                                             "{address} {}",
                                             gb.bus
-                                                .read::<true>(cart, *address).ok()
+                                                .read::<true>(cart, *address)
+                                                .ok()
                                                 .and_then(|op| self.opcodes.get(&Opcode(op)).map(
                                                     |desc| format!(
                                                         "({})",

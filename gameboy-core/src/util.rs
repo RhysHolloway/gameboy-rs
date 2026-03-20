@@ -42,21 +42,21 @@ impl Add<Width> for Address {
     type Output = Address;
 
     fn add(self, rhs: Width) -> Self::Output {
-        Self(self.0 + rhs)
+        Self(self.0.wrapping_add(rhs))
     }
 }
 
 impl AddAssign<Width> for Address {
 
     fn add_assign(&mut self, rhs: Width) {
-        self.0 += rhs;
+        self.0 = self.0.wrapping_add(rhs);
     }
 }
 
 impl SubAssign<Width> for Address {
 
     fn sub_assign(&mut self, rhs: Width) {
-        self.0 -= rhs;
+        self.0 = self.0.wrapping_sub(rhs);
     }
 }
 
@@ -64,7 +64,7 @@ impl Sub for Address {
     type Output = Address;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0 - rhs.0)
+        Self(self.0.wrapping_sub(rhs.0))
     }
 }
 
@@ -72,7 +72,7 @@ impl Sub<Width> for Address {
     type Output = Address;
 
     fn sub(self, rhs: Width) -> Self::Output {
-        Self(self.0 - rhs)
+        Self(self.0.wrapping_sub(rhs))
     }
 }
 
@@ -118,8 +118,7 @@ impl<const SIZE: usize> Memory<SIZE> {
 }
 
 impl<const SIZE: usize> Memory<SIZE> {
-    pub const fn read_offset(&self, address: Address) -> Result<u8, MemoryError> {
-        let index = address.index();
+    pub const fn read(&self, index: usize) -> Result<u8, MemoryError> {
         if index < Self::SIZE {
             Ok(self.data[index])
         } else {
@@ -127,8 +126,7 @@ impl<const SIZE: usize> Memory<SIZE> {
         }
     }
 
-    pub const fn write_offset(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
-        let index = address.index();
+    pub const fn write(&mut self, index: usize, value: u8) -> Result<(), MemoryError> {
         if index < Self::SIZE {
             self.data[index] = value;
             Ok(())
@@ -136,55 +134,6 @@ impl<const SIZE: usize> Memory<SIZE> {
             Err(MemoryError::Write(self.location, index))
         }
     }
-}
-
-#[derive(Clone)]
-pub struct OffsetMemory<const START: usize, const SIZE: usize>(Memory<SIZE>);
-
-impl<const START: usize, const SIZE: usize> OffsetMemory<START, SIZE> {
-    pub const START: usize = START;
-    pub const END: usize = START + (SIZE) - 1;
-    pub const SIZE: usize = SIZE;
-
-    pub fn new(location: &'static str) -> Self {
-        Self(Memory::new(location))
-    }
-
-    pub const fn read_offset(&self, address: Address) -> Result<u8, MemoryError> {
-        self.0.read_offset(address)
-    }
-
-    pub const fn write_offset(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
-        self.0.write_offset(address, value)
-    }
-
-    const fn map(&self, address: Address) -> Address {
-        Address::from_index(address.sub(START))
-    }
-
-    pub const fn read_mapped(&self, address: Address) -> Result<u8, MemoryError> {
-        let offset = self.map(address).index();
-        if offset < Self::SIZE {
-            Ok(self.0.data[offset])
-        } else {
-            Err(MemoryError::Read(self.0.location, address.index()))
-        }
-    }
-
-    pub const fn write_mapped(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
-        let offset = self.map(address).index();
-        if offset < Self::SIZE {
-            self.0.data[offset] = value;
-            Ok(())
-        } else {
-            Err(MemoryError::Write(self.0.location, address.index()))
-        }
-    }
-
-    pub const fn location(&self) -> &'static str {
-        self.0.location
-    }
-
 }
 
 #[derive(Debug, Clone, Copy)]

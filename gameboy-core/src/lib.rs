@@ -64,11 +64,7 @@ pub struct GameboyCycle {
 impl GameboyColor {
     pub const CLOCK_SPEED: usize = 4194304;
 
-    pub fn with_serial_callback(callback: Box<dyn FnMut(u8)>) -> Self {
-        Self { bus: bus::Bus::with_serial_callback(callback), ..Self::default() }
-    }
-
-    pub fn load(data: impl AsRef<[u8]>) -> Box<dyn Cartridge + 'static> {
+    pub fn load(data: impl AsRef<[u8]>) -> Result<Box<dyn Cartridge + 'static>, CartridgeError> {
         cartridge::load(data)
     }
 

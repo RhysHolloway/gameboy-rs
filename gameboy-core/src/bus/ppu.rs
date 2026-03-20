@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::ops::Deref;
 
 use crate::bus::cgb::Cgb;
-use crate::util::{Address, MemoryError, OffsetMemory};
-use crate::{Cycles, Width};
+use crate::util::{Address, MemoryError};
+use crate::{Cycles, Memory, Width};
 
 mod cdma;
 mod dma;
@@ -13,9 +13,9 @@ pub use dma::Dma;
 
 pub struct Ppu {
     clock: u16,
-    vram: OffsetMemory<0x8000, { Self::VRAM_BANK_SIZE as usize * 2 }>,
+    vram: Memory<{ Self::VRAM_BANK_SIZE * 2 }>,
     vram_bank: bool,
-    voam: OffsetMemory<0xFE00, 0xA0>,
+    voam: Memory<0xA0>,
     framebuffer: Box<[Pixel; Self::SCREEN_WIDTH * Self::SCREEN_HEIGHT]>,
     lcdc: u8,
     stat: u8,
@@ -98,9 +98,9 @@ impl Default for Ppu {
     fn default() -> Self {
         Self {
             clock: 0,
-            vram: OffsetMemory::new("Video RAM"),
+            vram: Memory::new("Video RAM"),
             vram_bank: false,
-            voam: OffsetMemory::new("Video OAM"),
+            voam: Memory::new("Video OAM"),
             framebuffer: unsafe { Box::new_zeroed().assume_init() },
             lcdc: 0x91,
             stat: 0x85,
@@ -127,7 +127,7 @@ impl Ppu {
     pub const SCREEN_WIDTH: usize = 160;
     pub const SCREEN_HEIGHT: usize = 144;
 
-    pub const VRAM_BANK_SIZE: Width = 0x2000;
+    pub const VRAM_BANK_SIZE: usize = 0x2000;
 
     pub const ADDRESS_LCDC: Address = Address::new(0xFF40);
     pub const ADDRESS_STAT: Address = Address::new(0xFF41); // lcd status memory location
@@ -186,30 +186,37 @@ impl Ppu {
     pub const LCDC_OBJ: u8 = 1 << 1;
     pub const LCDC_OBJ_SIZE: u8 = 1 << 2;
 
+    const fn vram_map(&self, address: &Address) -> usize {
+        address.index() - 0x8000 + (self.vram_bank as usize * Self::VRAM_BANK_SIZE)
+    }
+
     pub fn read_vram(&self, address: Address) -> Result<u8, MemoryError> {
-        let address = address + (self.vram_bank as Width * Self::VRAM_BANK_SIZE);
-        self.vram.read_mapped(address)
+        self.vram.read(self.vram_map(&address))
     }
 
     pub fn write_vram(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
-        self.vram.write_mapped(
-            address + (self.vram_bank as Width * Self::VRAM_BANK_SIZE),
-            value,
-        )
+        self.vram.write(self.vram_map(&address), value)
     }
 
-    pub fn read_voam<const DMA: bool>(&self, address: Address) -> Result<u8, MemoryError> {
+    const fn voam_map<const DMA: bool>(&self, address: &Address) -> Result<usize, MemoryError> {
         if !DMA && (self.mode() == Self::VBLANK || self.mode() == Self::HBLANK) {
             // return Err(MemoryError::Write("OAM during transfer", address.index()));
         }
-        self.voam.read_mapped(address)
+        Ok(0xFE00 + address.index())
     }
 
-    pub fn write_voam<const DMA: bool>(&mut self, address: Address, value: u8) -> Result<(), MemoryError> {
-        if !DMA && (self.mode() == Self::VBLANK || self.mode() == Self::HBLANK) {
-            // return Err(MemoryError::Write("OAM during transfer", address.index()));
-        }
-        self.voam.write_mapped(address, value)
+    pub fn read_voam<const DMA: bool>(&self, address: &Address) -> Result<u8, MemoryError> {
+        self.voam_map::<DMA>(address)
+            .and_then(|i| self.voam.read(i))
+    }
+
+    pub fn write_voam<const DMA: bool>(
+        &mut self,
+        address: &Address,
+        value: u8,
+    ) -> Result<(), MemoryError> {
+        self.voam_map::<DMA>(address)
+            .and_then(|i| self.voam.write(i, value))
     }
 
     pub fn cycle(&mut self, int: &mut u8, cgb: &Cgb, cycles: &Cycles) -> Result<bool, MemoryError> {
@@ -462,10 +469,10 @@ impl Ppu {
         if sprite_enable {
             for i in 0..40 {
                 let base = i * 4;
-                let sy = self.voam.read_offset(Address::from_index(base))? as i16 - 16;
-                let sx = self.voam.read_offset(Address::from_index(base + 1))? as i16 - 8;
-                let tile = self.voam.read_offset(Address::from_index(base + 2))?;
-                let attrs = self.voam.read_offset(Address::from_index(base + 3))?;
+                let sy = self.voam.read(base)? as i16 - 16;
+                let sx = self.voam.read(base + 1)? as i16 - 8;
+                let tile = self.voam.read(base + 2)?;
+                let attrs = self.voam.read(base + 3)?;
                 if y as i16 >= sy && (y as i16) < sy + sprite_size && sprite_count < 10 {
                     sprites[sprite_count] = Sprite {
                         x: sx,
@@ -511,20 +518,18 @@ impl Ppu {
                 let tile_x = (pixel_x / 8) & 31;
                 let tile_y = (pixel_y / 8) & 31;
 
-                let tile_index_addr = Address::new(map_base + tile_y * 32 + tile_x);
-                let tile_index = self.vram.read_offset(tile_index_addr)?;
+                let tile_index_addr = (map_base + tile_y * 32 + tile_x) as usize;
+                let tile_index = self.vram.read(tile_index_addr)?;
 
                 let mut tile_addr = if self.lcdc & 0x10 != 0 {
-                    tile_data_base + (tile_index as u16) * 16
+                    tile_data_base + (tile_index as usize) * 16
                 } else {
                     let signed = tile_index as i8 as i16;
-                    (0x1000i16 + signed * 16) as u16
+                    (0x1000i16 + signed * 16) as usize
                 };
 
                 let (palnr, xflip, yflip, prio) = if cgb.enabled() {
-                    let flags = self
-                        .vram
-                        .read_offset(tile_index_addr + Self::VRAM_BANK_SIZE)?;
+                    let flags = self.vram.read(tile_index_addr + Self::VRAM_BANK_SIZE)?;
 
                     if flags & (1 << 3) != 0 {
                         tile_addr += Self::VRAM_BANK_SIZE;
@@ -539,16 +544,16 @@ impl Ppu {
                     (0, false, false, false)
                 };
 
-                let line = pixel_y % 8;
+                let line = pixel_y as usize % 8;
                 let bit = 7 - (pixel_x % 8);
 
-                let color_addr: Address = Address::new(match yflip {
+                let color_addr = match yflip {
                     false => tile_addr + (line * 2),
                     true => tile_addr + (14 - (line * 2)),
-                });
+                };
 
-                let lo = self.vram.read_offset(color_addr)?;
-                let hi = self.vram.read_offset(color_addr + 1)?;
+                let lo = self.vram.read(color_addr)?;
+                let hi = self.vram.read(color_addr + 1)?;
 
                 let col = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
 
@@ -585,20 +590,16 @@ impl Ppu {
                                 sprite_y -= 8;
                             }
                         }
-                        let tile_addr = (tile as u16) * 16;
-                        let line = sprite_y as u16;
-                        let bit = 7 - (sprite_x as u16);
+                        let tile_addr = (tile as usize) * 16;
+                        let line = sprite_y as usize;
+                        let bit = 7 - (sprite_x as u8);
                         let c_vram1 = if sprite.attrs & (1 << 3) != 0 && cgb.enabled() {
                             Self::VRAM_BANK_SIZE
                         } else {
                             0
                         };
-                        let lo = self
-                            .vram
-                            .read_offset(Address::new(c_vram1 + tile_addr + line * 2))?;
-                        let hi = self
-                            .vram
-                            .read_offset(Address::new(c_vram1 + tile_addr + line * 2 + 1))?;
+                        let lo = self.vram.read(c_vram1 + tile_addr + line * 2)?;
+                        let hi = self.vram.read(c_vram1 + tile_addr + line * 2 + 1)?;
                         let color_id = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
                         if color_id != 0 {
                             let palette = if sprite.attrs & 0x10 != 0 {
@@ -650,7 +651,7 @@ impl Ppu {
         // };
 
         let bg_map_base = if self.lcdc & 0x08 != 0 {
-            0x1C00
+            0x1C00usize
         } else {
             0x1800
         };
@@ -696,11 +697,11 @@ impl Ppu {
                 continue;
             };
 
-            let tilenraddr = Address::new(tilemapbase + tiley * 32 + tilex);
-            let tilenr: u8 = self.vram.read_offset(tilenraddr)?;
+            let tilenraddr = tilemapbase + (tiley * 32 + tilex) as usize;
+            let tilenr: u8 = self.vram.read(tilenraddr)?;
 
             let (palnr, vram1, xflip, yflip, prio) = if cgb.enabled() {
-                let flags = self.vram.read_offset(tilenraddr + Self::VRAM_BANK_SIZE)?;
+                let flags = self.vram.read(tilenraddr + Self::VRAM_BANK_SIZE)?;
                 (
                     flags & 0x07,
                     flags & (1 << 3) != 0,
@@ -719,16 +720,16 @@ impl Ppu {
                     (tilenr as i8 as i16 + 128) as u16
                 }) * 16;
 
-            let a0 = Address::new(match yflip {
+            let a0 = match yflip {
                 false => tileaddress + (pixely * 2),
                 true => tileaddress + (14 - (pixely * 2)),
-            });
+            } as usize;
 
             let (b1, b2) = match vram1 {
-                false => (self.vram.read_offset(a0)?, self.vram.read_offset(a0 + 1)?),
+                false => (self.vram.read(a0)?, self.vram.read(a0 + 1)?),
                 true => (
-                    self.vram.read_offset(a0 + Self::VRAM_BANK_SIZE)?,
-                    self.vram.read_offset(a0 + 1 + Self::VRAM_BANK_SIZE)?,
+                    self.vram.read(a0 + Self::VRAM_BANK_SIZE)?,
+                    self.vram.read(a0 + 1 + Self::VRAM_BANK_SIZE)?,
                 ),
             };
 
@@ -779,12 +780,12 @@ impl Ppu {
                 oam_index: 0,
             }; 10];
             let mut sprite_count = 0;
-            for i in 0..40u8 {
-                let base = i as u16 * 4;
-                let sy = self.voam.read_offset(Address::new(base))? as i16 - 16;
-                let sx = self.voam.read_offset(Address::new(base + 1))? as i16 - 8;
-                let tile = self.voam.read_offset(Address::new(base + 2))?;
-                let attrs = self.voam.read_offset(Address::new(base + 3))?;
+            for i in 0..40 {
+                let base = i as usize * 4;
+                let sy = self.voam.read(base)? as i16 - 16;
+                let sx = self.voam.read(base + 1)? as i16 - 8;
+                let tile = self.voam.read(base + 2)?;
+                let attrs = self.voam.read(base + 3)?;
                 if self.ly() as i16 >= sy
                     && (self.ly() as i16) < sy + sprite_size
                     && sprite_count < 10
@@ -826,19 +827,17 @@ impl Ppu {
                         (self.ly() as i16 - sprite.y) as u16
                     };
 
-                    let tile_address = Address::new(
-                        sprite.tile as u16 * 16
-                            + tiley * 2
-                            + if c_vram1 && cgb.enabled() {
-                                Self::VRAM_BANK_SIZE
-                            } else {
-                                0
-                            },
-                    );
+                    let tile_address = sprite.tile as usize * 16
+                        + tiley as usize * 2
+                        + if c_vram1 && cgb.enabled() {
+                            Self::VRAM_BANK_SIZE
+                        } else {
+                            0
+                        };
 
                     let (b1, b2) = (
-                        self.vram.read_offset(tile_address)?,
-                        self.vram.read_offset(tile_address + 1)?,
+                        self.vram.read(tile_address)?,
+                        self.vram.read(tile_address + 1)?,
                     );
 
                     'xloop: for x in 0..8 {
