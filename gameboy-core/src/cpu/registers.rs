@@ -1,7 +1,7 @@
 use std::ops::{Index, IndexMut};
 
-use crate::Cartridge;
-use crate::bus::{Bus, BusError};
+use crate::{Cartridge, MemoryError};
+use crate::bus::Bus;
 use crate::util::Address;
 
 #[repr(C)]
@@ -16,10 +16,9 @@ pub struct Registers {
 
 impl Default for Registers {
     fn default() -> Self {
-        Self::default()
+        Self::new_dmg()
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reg {
@@ -47,16 +46,59 @@ pub enum DReg {
 }
 
 impl Registers {
+    pub const fn new_dmg() -> Self {
+        Self::new_single(
+            0x00,
+            0x13,
+            0x00,
+            0xD8,
+            0x01,
+            0x4D,
+            0x01,
+            Reg::FLAG_ZERO,
+            0xFFFE,
+            0x0100,
+        )
+    }
 
-    pub const fn default() -> Self {
-        Self { bc: 0, de: 0, hl: 0, af: 0,  sp: 0xFFFE, pc: 0x100, }
+    pub const fn new_cgb() -> Self {
+        Self::new_single(
+            0x00,
+            0x00,
+            0xFF,
+            0x56,
+            0x00,
+            0x0D,
+            0x11,
+            Reg::FLAG_ZERO,
+            0xFFFE,
+            0x0100,
+        )
     }
 
     pub const fn new(bc: u16, de: u16, hl: u16, af: u16, sp: u16, pc: u16) -> Self {
-        Self { bc, de, hl, af, sp, pc }
+        Self {
+            bc,
+            de,
+            hl,
+            af,
+            sp,
+            pc,
+        }
     }
 
-    pub const fn new_single(b: u8, c: u8, d: u8, e: u8, h: u8, l: u8, a: u8, f: u8, sp: u16, pc: u16) -> Self {
+    pub const fn new_single(
+        b: u8,
+        c: u8,
+        d: u8,
+        e: u8,
+        h: u8,
+        l: u8,
+        a: u8,
+        f: u8,
+        sp: u16,
+        pc: u16,
+    ) -> Self {
         Self {
             bc: u16::from_be_bytes([b, c]),
             de: u16::from_be_bytes([d, e]),
@@ -67,17 +109,23 @@ impl Registers {
         }
     }
 
-    pub fn read_index<D: AsRef<[u8]>>(&self, cart: &Cartridge<D>, bus: &Bus, index: u8) -> Result<u8, BusError> {
+    pub fn read_index(&self, cart: &dyn Cartridge, bus: &Bus, index: u8) -> Result<u8, MemoryError> {
         match index {
-            6 => bus.read(cart, Address::new(self[DReg::HL])),
+            6 => bus.read::<false>(cart, Address::new(self[DReg::HL])),
             0..=5 | 7 => Ok(self[Reg::pair(index)]),
             8.. => unreachable!(),
         }
     }
 
-    pub fn write_index<D: AsRef<[u8]>>(&mut self, cart: &mut Cartridge<D>, bus: &mut Bus, index: u8, value: u8) -> Result<(), BusError> {
+    pub fn write_index(
+        &mut self,
+        cart: &mut dyn Cartridge,
+        bus: &mut Bus,
+        index: u8,
+        value: u8,
+    ) -> Result<(), MemoryError> {
         match index {
-            6 => bus.write(cart, Address::new(self[DReg::HL]), value),
+            6 => bus.write::<false>(cart, Address::new(self[DReg::HL]), value),
             0..=5 | 7 => Ok(self[Reg::pair(index)] = value),
             8.. => unreachable!(),
         }
@@ -116,11 +164,9 @@ impl Reg {
             6 | 8.. => unreachable!(),
         }
     }
-
 }
 
 impl DReg {
-
     #[inline]
     pub const fn pair1(p: u8) -> Self {
         match p {
@@ -130,8 +176,8 @@ impl DReg {
             3 => DReg::SP,
             _ => unreachable!(),
         }
-    } 
-    
+    }
+
     #[inline]
     pub const fn pair2(p: u8) -> Self {
         match p {
@@ -142,20 +188,19 @@ impl DReg {
             _ => unreachable!(),
         }
     }
-
 }
 
 impl Index<Reg> for Registers {
     type Output = u8;
 
     fn index(&self, register: Reg) -> &Self::Output {
-        unsafe { &*(self as *const Self as *const u8).add(register as usize) }    
+        unsafe { &*(self as *const Self as *const u8).add(register as usize) }
     }
 }
 
 impl IndexMut<Reg> for Registers {
     fn index_mut(&mut self, register: Reg) -> &mut Self::Output {
-        unsafe { &mut *(self as *mut Self as *mut u8).add(register as usize) }    
+        unsafe { &mut *(self as *mut Self as *mut u8).add(register as usize) }
     }
 }
 

@@ -2,9 +2,9 @@ use egui::Widget;
 use gameboy_core::Cartridge;
 use pixels::winit::dpi::PhysicalSize;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender};
 
-use gameboy_core::cpu::{CycleError, CycleExecution, DReg, ExecutionType, Opcode, Reg};
+use gameboy_core::cpu::{CycleError, CycleResult, DReg, ExecutionType, Opcode, Reg};
 use gameboy_core::util::{Address, Width};
 
 use self::opcode::OpcodeDescriptor;
@@ -22,10 +22,16 @@ pub struct Debugger {
     step: bool,
     run: bool,
     error: Option<String>,
-    serial: Arc<Mutex<VecDeque<u8>>>,
+    serial: Option<Serial>,
     speed_text: String,
     speed: f64,
     history: VecDeque<ExecutionType>,
+}
+
+struct Serial {
+    sender: Sender<u8>,
+    receiver: Receiver<u8>,
+    buffer: Vec<u8>,
 }
 
 impl Debugger {
@@ -41,12 +47,12 @@ impl Debugger {
             speed_text: String::new(),
             speed: 1.0,
             error: None,
-            serial: Arc::new(Mutex::new(VecDeque::new())),
+            serial: None,
             history: VecDeque::new(),
         }
     }
-
-    pub fn log<D: AsRef<[u8]>>(&mut self, cart: &Cartridge<D>, gb: &GameboyColor) {
+    
+    pub fn log(&mut self, cart: &dyn Cartridge, gb: &GameboyColor) {
         let address = Address::new(gb.cpu.registers[DReg::PC]);
         // A:00 F:11 B:22 C:33 D:44 E:55 H:66 L:77 SP:8888 PC:9999 PCMEM:AA,BB,CC,DD
         println!(
@@ -61,32 +67,47 @@ impl Debugger {
             gb.cpu.registers[Reg::L],
             gb.cpu.registers[DReg::SP],
             address,
-            gb.bus.read_dma(cart, address).unwrap_or(0xFF),
-            gb.bus.read_dma(cart, address + 1).unwrap_or(0xFF),
-            gb.bus.read_dma(cart, address + 2).unwrap_or(0xFF),
-            gb.bus.read_dma(cart, address + 3).unwrap_or(0xFF)
+            gb.bus.read::<true>(cart, address).unwrap_or(0xFF),
+            gb.bus.read::<true>(cart, address + 1).unwrap_or(0xFF),
+            gb.bus.read::<true>(cart, address + 2).unwrap_or(0xFF),
+            gb.bus.read::<true>(cart, address + 3).unwrap_or(0xFF)
         );
     }
 
-    pub fn on_cycle(&mut self, result: CycleExecution) {
-        match result.execution {
-            ExecutionType::Halt => {
-                if matches!(self.history.back(), Some(&ExecutionType::Halt)) {
+    pub fn create_serial_callback(&mut self) -> Box<dyn FnMut(u8)> {
+        let serial = self.serial.get_or_insert_with(|| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+            Serial { sender, receiver, buffer: Vec::new() }
+        });
+        let sender = serial.sender.clone();
+        serial.buffer.clear();
+        Box::new(move |byte| {
+            sender.send(byte).unwrap();
+        })
+    }
+
+    pub fn on_cycle(&mut self, result: CycleResult) {
+        match result.kind {
+            ExecutionType::Stop | ExecutionType::Halt => {
+                if matches!(
+                    self.history.back(),
+                    Some(ExecutionType::Stop | ExecutionType::Halt)
+                ) {
                     return;
                 }
             }
             _ => (),
         }
 
-        self.history.push_back(result.execution);
+        self.history.push_back(result.kind);
         if self.history.len() > 100 {
             self.history.pop_front();
         }
     }
 
-    pub fn window<D: AsRef<[u8]>>(
+    pub fn window(
         &mut self,
-        cart: &Cartridge<Vec<u8>>,
+        cart: &dyn Cartridge,
         gb: &mut GameboyColor,
         ctx: &egui::Context,
         window: PhysicalSize<u32>,
@@ -100,7 +121,7 @@ impl Debugger {
                 let opcol = &mut cols[0];
 
                 for i in 0..10 {
-                    match gb.bus.read(cart, address) {
+                    match gb.bus.read::<true>(cart, address) {
                         Ok(op) => {
                             let opcode = Opcode(op);
                             let ptr = match i == 0 {
@@ -167,10 +188,10 @@ impl Debugger {
                     cols[1].label(format!("PPU=\t{:#02X}", gb.bus.ppu.clock()));
 
                     cols[0].label(format!("SP=\t{:#04X}", gb.cpu.registers[DReg::SP]));
-                    cols[1].label(format!("HALT=\t{}", gb.bus.interrupts.is_halting()));
+                    cols[1].label(format!("HALT=\t{}", gb.bus.interrupts.halted()));
 
                     cols[0].label(format!("PC=\t{:#04X}", gb.cpu.registers[DReg::PC]));
-                    cols[1].label(format!("DMA=\t{}", gb.bus.dma.is_active()));
+                    cols[1].label(format!("DMA=\t{}", gb.bus.dma_active()));
 
                     cols[0].label(format!("IE=\t{:#05b}", gb.bus.interrupts.ie()));
                     cols[1].label(format!("IME=\t{}", gb.bus.interrupts.ime()));
@@ -182,25 +203,27 @@ impl Debugger {
                     cols[1].label(format!("TMA=\t{:#02X}", gb.bus.timer.tma()));
 
                     // cols[0].label(format!("CONTR"));
-                    cols[1].label(format!("ROM=\t0x{:02X}", gb.bus.cartridge.rom_bank()));
+                    // cols[1].label(format!("ROM=\t0x{:02X}", cart.rom_bank()));
                 });
 
                 let sercol = &mut cols[2];
 
-                if let Ok(serial) = self.serial.try_lock() {
-                    sercol.label("Serial I/O");
-                    sercol.separator();
+                sercol.label("Serial I/O");
+                sercol.separator();
 
-                    if !serial.is_empty() {
+                if let Some(Serial { receiver, buffer, .. }) = self.serial.as_mut() {
+                    while let Ok(byte) = receiver.try_recv() {
+                        buffer.push(byte);
+                    }
 
-                        if serial.len() < 128 {
+                    if !buffer.is_empty() {
+                        if buffer.len() < 128 {
                             egui::ScrollArea::vertical().id_salt("serbytes").show(
                                 sercol,
                                 |sercol| {
-                                    let bytes =
-                                        serial.iter().fold(String::new(), |prev, next| {
-                                            format!("{prev}{next:02X}")
-                                        });
+                                    let bytes = buffer.iter().fold(String::new(), |prev, next| {
+                                        format!("{prev}{next:02X}")
+                                    });
                                     egui::Label::new(format!("{}", bytes))
                                         .wrap_mode(egui::TextWrapMode::Wrap)
                                         .ui(sercol);
@@ -212,7 +235,7 @@ impl Debugger {
                         egui::ScrollArea::vertical()
                             .id_salt("sertext")
                             .show(sercol, |sercol| {
-                                egui::Label::new(String::from_utf8_lossy(serial.as_slices().1))
+                                egui::Label::new(String::from_utf8_lossy(&buffer))
                                     .wrap_mode(egui::TextWrapMode::Wrap)
                                     .ui(sercol);
                             });
@@ -283,11 +306,12 @@ impl Debugger {
                                     ExecutionType::Interrupt(address) =>
                                         format!("interrupt jump to {address}"),
                                     ExecutionType::Halt => "halt".to_string(),
+                                    ExecutionType::Stop => "stop".to_string(),
                                     ExecutionType::Opcode(address) => {
                                         format!(
                                             "{address} {}",
                                             gb.bus
-                                                .read_dma(cart, *address)
+                                                .read::<true>(cart, *address).ok()
                                                 .and_then(|op| self.opcodes.get(&Opcode(op)).map(
                                                     |desc| format!(
                                                         "({})",
@@ -328,7 +352,7 @@ impl Debugger {
                 }
 
                 if buttons[2].add(egui::Button::new("Reset").small()).clicked() {
-                    self.reset(gb);
+                    self.reset(gb, cart);
                 }
             });
 
@@ -378,13 +402,13 @@ impl Debugger {
         self.error = Some(err.to_string());
     }
 
-    pub fn reset(&mut self, gb: &mut GameboyColor) {
+    pub fn reset(&mut self, gb: &mut GameboyColor, cart: &dyn Cartridge) {
         self.error = None;
         self.run = false;
         self.step = false;
         self.breakpoint = false;
         self.delete_mode = false;
         self.breakpoint_box.clear();
-        gb.reset();
+        gb.reset(cart);
     }
 }

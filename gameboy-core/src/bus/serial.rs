@@ -1,15 +1,12 @@
 use crate::Cycles;
-use crate::util::{Address, MemoryError};
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use crate::util::Address;
 
-#[derive(Clone, Debug)]
 pub struct SerialState {
     sb: u8,
     sc: u8,
     active: bool,
     cycles: u16,
-    output: Option<Arc<Mutex<VecDeque<u8>>>>,
+    callback: Option<Box<dyn FnMut(u8)>>,
 }
 
 impl Default for SerialState {
@@ -19,15 +16,15 @@ impl Default for SerialState {
             sc: 0x7E,
             active: false,
             cycles: 0,
-            output: None,
+            callback: None,
         }
     }
 }
 
 impl SerialState {
 
-    pub fn set_output(&mut self, output: Arc<Mutex<VecDeque<u8>>>) {
-        self.output = Some(output);
+    pub fn with_callback(callback: Box<dyn FnMut(u8)>) -> Self {
+        Self { callback: Some(callback), ..Self::default() }
     }
 
     const ADDR_SB: Address = Address::new(0xFF01);
@@ -40,11 +37,11 @@ impl SerialState {
         match address {
             &Self::ADDR_SB => self.sb,
             &Self::ADDR_SC => self.sc | 0x7E,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
-    pub(super) const fn write(&mut self, address: &Address, value: u8)  {
+    pub(super) const fn write(&mut self, address: &Address, value: u8) {
         match address {
             &Self::ADDR_SB => self.sb = value,
             &Self::ADDR_SC => {
@@ -54,25 +51,21 @@ impl SerialState {
                     self.cycles = 0;
                 }
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
-    pub(super) fn cycle(&mut self, int: &mut u8, cycles: &Cycles) -> Result<(), MemoryError> {
+    pub(super) fn cycle(&mut self, int: &mut u8, cycles: &Cycles) {
         if self.active {
             self.cycles = self.cycles.saturating_add(cycles.t() as u16);
             if self.cycles >= 4096 {
                 self.active = false;
                 self.sc &= 0x7F;
-                if let Some(output) = self.output.as_mut() {
-                    match output.lock() {
-                        Ok(mut output) => output.push_back(self.sb),
-                        Err(..) => return Err(MemoryError::Write(Self::LOCATION, Self::ADDR_SB)),
-                    }
+                if let Some(output) = self.callback.as_mut() {
+                    output(self.sb);
                 }
                 *int |= Self::INTERRUPT_BIT;
             }
         }
-        Ok(())
     }
 }

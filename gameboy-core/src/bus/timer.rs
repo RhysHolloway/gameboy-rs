@@ -1,13 +1,14 @@
-use crate::Cycles;
-use crate::util::Address;
+use crate::bus::Interrupts;
+use crate::{Address, Cycles};
 
 #[derive(Default)]
 pub struct Timer {
-    div: u16,
+    div: u8,
     tima: u8,
     tma: u8,
     tac: u8,
-    overflow: bool,
+    internalcnt: u32,
+    internaldiv: u32,
 }
 
 impl Timer {
@@ -18,66 +19,62 @@ impl Timer {
 
     const INTERRUPT_BIT: u8 = 0b100;
     const TAC_ENABLE_BIT: u8 = 0b100;
-    const TAC_FREQ_BITS: u8 = 0b11;
+    const TAC_STEP_BITS: u8 = 0b11;
 
-    pub(super) const fn write(&mut self, address: &Address, value: u8) {
-        match address {
-            &Self::DIV => self.div = 0,
-            &Self::TIMA => self.tima = value,
-            &Self::TMA => self.tma = value,
-            &Self::TAC => {
-                self.tac = (self.tac & !(Self::TAC_ENABLE_BIT | Self::TAC_FREQ_BITS))
-                    | (value & (Self::TAC_ENABLE_BIT | Self::TAC_FREQ_BITS))
-            }
-            _ => unreachable!(),
-        }
+    pub(crate) const fn reset_div(&mut self) {
+        self.div = 0;
+        self.internaldiv = 0;
     }
 
-    pub(super) const fn read(&self, address: &Address) -> u8 {
-        match address {
-            // return most significant bit
-            &Self::DIV => self.div(),
+    pub(super) const fn write(&mut self, a: &Address, v: u8) {
+        match a {
+            &Self::DIV => self.reset_div(),
+            &Self::TIMA => self.tima = v,
+            &Self::TMA => self.tma = v,
+            &Self::TAC => self.tac = v,
+            _ => unreachable!(),
+        };
+    }
+
+    pub(super) const fn read(&self, a: &Address) -> u8 {
+        match a {
+            &Self::DIV => self.div,
             &Self::TIMA => self.tima,
             &Self::TMA => self.tma,
-            &Self::TAC => self.tac(),
+            &Self::TAC => 0xF8 | self.tac,
             _ => unreachable!(),
         }
     }
 
-    pub fn cycle(&mut self, int: &mut u8, cycles: &Cycles) {
-        let ticks = cycles.t() as u16;
-
-        let old_div = self.div;
-
-        self.div = self.div.wrapping_add(ticks);
-
-        if self.overflow {
-            self.overflow = false;
-            *int |= Self::INTERRUPT_BIT;
-            self.tima = self.tma;
+    pub fn cycle(&mut self, i: &mut Interrupts, cycles: &Cycles) {
+        self.internaldiv += cycles.t() as u32;
+        while self.internaldiv >= 256 {
+            self.div = self.div.wrapping_add(1);
+            self.internaldiv -= 256;
         }
 
-        let freq = self.step();
-        let increase_tima = (old_div.wrapping_add(ticks) / freq).wrapping_sub(old_div / freq) as u8;
+        if self.enabled() {
+            self.internalcnt += cycles.t() as u32;
 
-        // If bit 2 of TAC is set to 0 then the timer is disabled
-        if increase_tima != 0 && self.enabled() {
-            if self.tima == 0xFF {
-                self.tima = 0;
-                self.overflow = true;
-            } else {
-                self.tima = self.tima.wrapping_add(increase_tima);
+            let step = self.step();
+
+            while self.internalcnt >= step {
+                self.tima = self.tima.wrapping_add(1);
+                if self.tima == 0 {
+                    self.tima = self.tma;
+                    i.i |= Self::INTERRUPT_BIT;
+                }
+                self.internalcnt -= step;
             }
         }
     }
 
-    const fn step(&self) -> u16 {
-        match self.tac & Self::TAC_FREQ_BITS {
-            0b00 => 128,
-            0b01 => 2,
-            0b10 => 8,
-            0b11 => 32,
-            _ => unreachable!(),
+    const fn step(&self) -> u32 {
+        match self.tac & Self::TAC_STEP_BITS {
+            1 => 16,
+            2 => 64,
+            3 => 256,
+            _ => 1024,
         }
     }
 
@@ -86,7 +83,7 @@ impl Timer {
     }
 
     pub const fn div(&self) -> u8 {
-        (self.div >> 8) as u8
+        self.div
     }
 
     pub const fn tima(&self) -> u8 {
@@ -98,6 +95,6 @@ impl Timer {
     }
 
     pub const fn tac(&self) -> u8 {
-        self.tac & 0b111
+        self.tac
     }
 }

@@ -33,7 +33,7 @@ mod debugger;
 
 pub struct Application<W: CreateWindow> {
     pub emulator: Emulator,
-    pub cartridge: Option<Cartridge<Vec<u8>>>,
+    pub cartridge: Option<Box<dyn Cartridge + 'static>>,
     graphics: Option<GraphicsState>,
     proxy: Arc<EventLoopProxy<GraphicsState>>,
     event_loop: Option<EventLoop<GraphicsState>>,
@@ -74,15 +74,26 @@ pub enum ApplicationUpdate {
 
 impl Emulator {
     pub fn new(debugger: bool) -> Self {
-        Self {
-            gameboy: GameboyColor::new(),
-            debugger: debugger.then(Debugger::new),
+        match debugger {
+            true => {
+                let mut debugger = Debugger::new();
+                Self {
+                    gameboy: GameboyColor::with_serial_callback(debugger.create_serial_callback()),
+                    debugger: Some(debugger),
+                }
+            },
+            false => {
+                Self {
+                    gameboy: GameboyColor::default(),
+                    debugger: None,
+                }
+            },
         }
     }
 
-    pub fn update<D: AsRef<[u8]>, const LOG: bool>(
+    pub fn update<const LOG: bool>(
         &mut self,
-        cart: &mut Cartridge<D>,
+        cart: &mut dyn Cartridge,
         next: Option<&mut Instant>,
     ) -> ApplicationUpdate {
         let mut update = ApplicationUpdate::Continue;
@@ -260,10 +271,10 @@ impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(cart) = self.cartridge.as_mut() {
+                if let Some(cart) = self.cartridge.as_deref_mut() {
                     match self
                         .emulator
-                        .update::<_, false>(cart, self.graphics.as_mut().map(|g| &mut g.next))
+                        .update::<false>(cart, self.graphics.as_mut().map(|g| &mut g.next))
                     {
                         ApplicationUpdate::Continue => (),
                         ApplicationUpdate::Exit => event_loop.exit(),
@@ -282,12 +293,12 @@ impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
 
                 if let Some(graphics) = self.graphics.as_mut() {
                     if let Some((debugger, cart)) =
-                        self.emulator.debugger.as_mut().zip(self.cartridge.as_ref())
+                        self.emulator.debugger.as_mut().zip(self.cartridge.as_deref())
                     {
                         let raw_input = graphics.egui_state.take_egui_input(&graphics.window);
 
                         let egui_output = graphics.egui_state.egui_ctx().run(raw_input, |ctx| {
-                            debugger.window::<Vec<u8>>(
+                            debugger.window(
                                 cart,
                                 &mut self.emulator.gameboy,
                                 ctx,
@@ -377,7 +388,9 @@ impl<W: CreateWindow> ApplicationHandler<GraphicsState> for Application<W> {
             }
             WindowEvent::DroppedFile(path) => match std::fs::read(path) {
                 Ok(rom) => {
-                    self.cartridge = Some(Cartridge::new(rom));
+                    let cart = GameboyColor::load(rom);
+                    self.emulator.gameboy.reset(&*cart);
+                    self.cartridge = Some(cart);
                     if let Some(graphics) = self.graphics.as_mut() {
                         graphics.window.set_title(&format!(
                             "Gameboy Emulator - {}",

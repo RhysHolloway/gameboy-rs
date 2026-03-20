@@ -5,3 +5,7 @@ default-members = ["gameboy-core", "pixels", "web", "app", "desktop"]
 
 [workspace.package]
 edition = "2024"
+
+[profile.release]
+strip = true
+panic = "abort"

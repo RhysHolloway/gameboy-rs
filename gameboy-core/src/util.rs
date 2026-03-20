@@ -123,7 +123,7 @@ impl<const SIZE: usize> Memory<SIZE> {
         if index < Self::SIZE {
             Ok(self.data[index])
         } else {
-            Err(MemoryError::Read(self.location, address))
+            Err(MemoryError::Read(self.location, index))
         }
     }
 
@@ -133,7 +133,7 @@ impl<const SIZE: usize> Memory<SIZE> {
             self.data[index] = value;
             Ok(())
         } else {
-            Err(MemoryError::Write(self.location, address))
+            Err(MemoryError::Write(self.location, index))
         }
     }
 }
@@ -167,7 +167,7 @@ impl<const START: usize, const SIZE: usize> OffsetMemory<START, SIZE> {
         if offset < Self::SIZE {
             Ok(self.0.data[offset])
         } else {
-            Err(MemoryError::Read(self.0.location, address))
+            Err(MemoryError::Read(self.0.location, address.index()))
         }
     }
 
@@ -177,7 +177,7 @@ impl<const START: usize, const SIZE: usize> OffsetMemory<START, SIZE> {
             self.0.data[offset] = value;
             Ok(())
         } else {
-            Err(MemoryError::Write(self.0.location, address))
+            Err(MemoryError::Write(self.0.location, address.index()))
         }
     }
 
@@ -195,20 +195,20 @@ pub struct MemoryError {
 
 #[derive(Debug, Clone, Copy)]
 pub enum MemoryErrorKind {
-    Read(Address),
-    Write(Address),
+    Read(usize),
+    Write(usize),
     IO(&'static str),
 }
 
 impl MemoryError {
-    pub const fn Read(location: &'static str, address: Address) -> Self {
+    pub const fn Read(location: &'static str, address: usize) -> Self {
         Self {
             location,
             kind: MemoryErrorKind::Read(address),
         }
     }
 
-    pub const fn Write(location: &'static str, address: Address) -> Self {
+    pub const fn Write(location: &'static str, address: usize) -> Self {
         Self {
             location,
             kind: MemoryErrorKind::Write(address),

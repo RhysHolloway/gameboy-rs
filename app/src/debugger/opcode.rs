@@ -37,7 +37,7 @@ pub struct OpcodeDescriptor {
 }
 
 impl OpcodeDescriptor {
-    pub fn format<D: AsRef<[u8]>>(&self, cart: &Cartridge<D>, memory: &Bus, mut address: Address) -> String {
+    pub fn format(&self, cart: &dyn Cartridge, memory: &Bus, mut address: Address) -> String {
         let mut s = String::with_capacity(self.name.len() + 1 + self.args.len());
         s.push_str(&self.name);
         s.push('\t');
@@ -51,15 +51,15 @@ impl OpcodeDescriptor {
                     let value = match char {
                         "I" => {
                             address -= 1;
-                            memory.read(cart, address).map(|val| (val as i8).to_string()).ok()
+                            memory.read::<true>(cart, address).map(|val| (val as i8).to_string()).ok()
                         },
                         "S" => {
                             address -= 1;
-                            memory.read(cart, address).map(|val| format!("{val:02X}")).ok()
+                            memory.read::<true>(cart, address).map(|val| format!("{val:02X}")).ok()
                         },
                         "D" => {
                             address -= 2;
-                            memory.read_word(cart, address).map(|val| format!("{val:04X}")).ok()
+                            memory.read_word::<true>(cart, address).map(|val| format!("{val:04X}")).ok()
                         }
                         _ => None,
                     };

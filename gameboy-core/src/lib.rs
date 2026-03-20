@@ -1,13 +1,15 @@
 pub mod bus;
+mod cartridge;
 pub mod cpu;
 pub mod util;
-mod cartridge;
 
-pub use crate::util::*;
 pub use crate::cartridge::*;
+pub use crate::util::*;
 
 use self::cpu::CycleError;
 
+
+#[derive(Default)]
 pub struct GameboyColor {
     pub cpu: cpu::CPU,
     pub bus: bus::Bus,
@@ -20,17 +22,20 @@ pub struct GameboyColor {
 pub struct Cycles(usize);
 
 impl Cycles {
-
-    pub fn new(cycles: usize) -> Self {
+    pub const fn new(cycles: usize) -> Self {
         Self(cycles)
     }
 
-    pub fn t(&self) -> usize {
+    pub const fn t(&self) -> usize {
         self.0
     }
 
-    pub fn m(&self) -> usize {
+    pub const fn m(&self) -> usize {
         self.0 / 4
+    }
+
+    pub const fn split(self, double: bool, vram: Cycles) -> (Self, Self) {
+        (Self(self.0 + vram.0), Self(self.0 * if double { 2 } else { 1 } + vram.0))
     }
 }
 
@@ -46,14 +51,6 @@ impl PartialOrd<usize> for Cycles {
     }
 }
 
-impl<'a> std::ops::Div<u8> for &'a Cycles {
-    type Output = Cycles;
-
-    fn div(self, rhs: u8) -> Self::Output {
-        Cycles(self.0 / rhs as usize)
-    }
-}
-
 impl std::ops::AddAssign for Cycles {
     fn add_assign(&mut self, rhs: Self) {
         self.0 += rhs.0;
@@ -61,51 +58,44 @@ impl std::ops::AddAssign for Cycles {
 }
 
 pub struct GameboyCycle {
-    pub cpu: cpu::CycleExecution,
+    pub cpu: cpu::CycleResult,
     pub render: bool,
 }
-
-impl Default for GameboyColor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl GameboyColor {
     pub const CLOCK_SPEED: usize = 4194304;
 
-    pub fn new() -> Self {
-        Self {
-            cpu: cpu::CPU::new(),
-            bus: bus::Bus::new(),
-        }
+    pub fn with_serial_callback(callback: Box<dyn FnMut(u8)>) -> Self {
+        Self { bus: bus::Bus::with_serial_callback(callback), ..Self::default() }
     }
 
-    pub fn cycle<D: AsRef<[u8]>>(&mut self, cart: &mut Cartridge<D>) -> Result<GameboyCycle, CycleError> {
+    pub fn load(data: impl AsRef<[u8]>) -> Box<dyn Cartridge + 'static> {
+        cartridge::load(data)
+    }
+
+    pub fn cycle(
+        &mut self,
+        cart: &mut dyn Cartridge
+    ) -> Result<GameboyCycle, CycleError> {
         let cpu = self.cpu.cycle(cart, &mut self.bus)?;
-        self.bus.cycle(cart, &cpu.cycles).map(|render| GameboyCycle { cpu, render }).map_err(|e| CycleError::Bus(self.cpu.pc(), e))
+        self.bus
+            .cycle(cart, &cpu)
+            .map(|render| GameboyCycle { cpu, render })
+            .map_err(|e| CycleError::Bus(self.cpu.pc(), e))
     }
 
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, cart: &dyn Cartridge) {
         self.cpu.reset();
         self.bus.reset();
+        self.cpu.load(cart);
+        self.bus.load(cart);
     }
-        
+
     pub fn frame_to_rgba(&self, output: &mut [u8]) {
-
-        const DEFAULT_PALETTE: [[u8; 4]; 4] = [
-            [0xE0, 0xF8, 0xD0, 0xFF],
-            [0x88, 0xC0, 0x70, 0xFF],
-            [0x34, 0x68, 0x56, 0xFF],
-            [0x08, 0x18, 0x20, 0xFF],
-        ];
-
-        for (idx, shade) in self.bus.ppu.framebuffer().iter().enumerate() {
-            let shade = (*shade & 0x03) as usize;
+        for (idx, pixel) in self.bus.ppu.framebuffer().iter().enumerate() {
             let base = idx * 4;
-            output[base..base+4].copy_from_slice(&DEFAULT_PALETTE[shade]);
+            output[base..base + 3].copy_from_slice(&**pixel);
+            output[base + 3] = 0xFF;
         }
-        
     }
 
     pub fn update_input(&mut self, button: Controls, pressed: bool) {

@@ -1,3 +1,4 @@
+use crate::bus::Interrupts;
 use crate::util::Controls;
 
 #[derive(Default)]
@@ -43,12 +44,14 @@ impl Joypad {
         };
     }
 
-    pub const fn update(&mut self, int: &mut u8, (control, down): (Controls, bool)) {
+    pub(crate) const fn update(&mut self, interrupts: &mut Interrupts, (control, down): (Controls, bool)) {
         let bit = 1u8 << control as u8;
         let up = !down;
         self.state = (self.state & !(bit)) | ((up as u8) << control as u8);
         if up {
-            *int |= Self::INTERRUPT_BIT;
+            interrupts.i |= Self::INTERRUPT_BIT;
+        } else {
+            interrupts.set_stop(false);
         }
     }
 
