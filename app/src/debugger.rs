@@ -4,7 +4,7 @@ use pixels::winit::dpi::PhysicalSize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 
-use gameboy_core::cpu::{CycleError, CycleResult, DReg, ExecutionType, Opcode, Reg};
+use gameboy_core::cpu::{CycleResult, DReg, ExecutionType, Opcode, Reg};
 use gameboy_core::util::{Address, Width};
 
 use self::opcode::OpcodeDescriptor;
@@ -67,10 +67,10 @@ impl Debugger {
             gb.cpu.registers[Reg::L],
             gb.cpu.registers[DReg::SP],
             address,
-            gb.bus.read::<true>(cart, address).unwrap_or(0xFF),
-            gb.bus.read::<true>(cart, address + 1).unwrap_or(0xFF),
-            gb.bus.read::<true>(cart, address + 2).unwrap_or(0xFF),
-            gb.bus.read::<true>(cart, address + 3).unwrap_or(0xFF)
+            gb.bus.read::<true>(cart, address),
+            gb.bus.read::<true>(cart, address + 1),
+            gb.bus.read::<true>(cart, address + 2),
+            gb.bus.read::<true>(cart, address + 3)
         );
     }
 
@@ -145,38 +145,27 @@ impl Debugger {
                 let opcol = &mut cols[0];
 
                 for i in 0..10 {
-                    match gb.bus.read::<true>(cart, address) {
-                        Ok(op) => {
-                            let opcode = Opcode(op);
-                            let ptr = match i == 0 {
-                                true => "<-",
-                                false => "",
-                            };
-                            match self.opcodes.get(&opcode) {
-                                Some(desc) => {
-                                    egui::Label::new(format!(
-                                        "{address}\t{opcode},\t{}\t{ptr}",
-                                        desc.format(cart, &gb.bus, address)
-                                    ))
-                                    .wrap_mode(egui::TextWrapMode::Extend)
-                                    .ui(opcol);
-                                    address += desc.length as u16;
-                                }
-                                None => {
-                                    egui::Label::new(format!(
-                                        "{address}\t{opcode},\tUnknown\t{ptr}"
-                                    ))
-                                    .wrap_mode(egui::TextWrapMode::Extend)
-                                    .ui(opcol);
-                                    address += 1;
-                                }
-                            }
+                    let op = gb.bus.read::<true>(cart, address);
+                    let opcode = Opcode(op);
+                    let ptr = match i == 0 {
+                        true => "<-",
+                        false => "",
+                    };
+                    match self.opcodes.get(&opcode) {
+                        Some(desc) => {
+                            egui::Label::new(format!(
+                                "{address}\t{opcode},\t{}\t{ptr}",
+                                desc.format(cart, &gb.bus, address)
+                            ))
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .ui(opcol);
+                            address += desc.length as u16;
                         }
-                        Err(err) => {
-                            egui::Label::new(format!("{address} : Invalid: {err}"))
+                        None => {
+                            egui::Label::new(format!("{address}\t{opcode},\tUnknown\t{ptr}"))
                                 .wrap_mode(egui::TextWrapMode::Extend)
                                 .ui(opcol);
-                            break;
+                            address += 1;
                         }
                     }
                 }
@@ -215,7 +204,7 @@ impl Debugger {
                     cols[1].label(format!("HALT=\t{}", gb.bus.interrupts.halted()));
 
                     cols[0].label(format!("PC=\t{:#04X}", gb.cpu.registers[DReg::PC]));
-                    cols[1].label(format!("DMA=\t{}", gb.bus.dma_active()));
+                    cols[1].label(format!("DMA=\t{}", gb.bus.dma.is_active()));
 
                     cols[0].label(format!("IE=\t{:#05b}", gb.bus.interrupts.ie()));
                     cols[1].label(format!("IME=\t{}", gb.bus.interrupts.ime()));
@@ -335,14 +324,11 @@ impl Debugger {
                                     ExecutionType::Opcode(address) => {
                                         format!(
                                             "{address} {}",
-                                            gb.bus
-                                                .read::<true>(cart, *address)
-                                                .ok()
-                                                .and_then(|op| self.opcodes.get(&Opcode(op)).map(
-                                                    |desc| format!(
-                                                        "({})",
-                                                        desc.format(cart, &gb.bus, *address)
-                                                    )
+                                            self.opcodes
+                                                .get(&Opcode(gb.bus.read::<true>(cart, *address)))
+                                                .map(|desc| format!(
+                                                    "({})",
+                                                    desc.format(cart, &gb.bus, *address)
                                                 ))
                                                 .unwrap_or_else(|| "Unknown".to_string())
                                         )
@@ -423,7 +409,7 @@ impl Debugger {
         self.run = false;
     }
 
-    pub fn error(&mut self, err: CycleError) {
+    pub fn error(&mut self, err: impl std::error::Error) {
         self.pause();
         self.error = Some(err.to_string());
     }
@@ -435,6 +421,9 @@ impl Debugger {
         self.breakpoint = false;
         self.delete_mode = false;
         self.breakpoint_box.clear();
+        if let Some(serial) = self.serial.as_mut() {
+            serial.buffer.clear();
+        }
         gb.reset(cart);
     }
 }

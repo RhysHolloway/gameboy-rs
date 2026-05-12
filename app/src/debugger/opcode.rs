@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use gameboy_core::Cartridge;
 use gameboy_core::bus::Bus;
-use gameboy_core::util::{Address, Width};
 use gameboy_core::cpu::Opcode;
+use gameboy_core::util::{Address, Width};
 
 macro_rules! op {
     ($n:expr) => {
@@ -51,15 +51,15 @@ impl OpcodeDescriptor {
                     let value = match char {
                         "I" => {
                             address -= 1;
-                            memory.read::<true>(cart, address).map(|val| (val as i8).to_string()).ok()
-                        },
+                            Some((memory.read::<true>(cart, address) as i8).to_string())
+                        }
                         "S" => {
                             address -= 1;
-                            memory.read::<true>(cart, address).map(|val| format!("{val:02X}")).ok()
-                        },
+                            Some(format!("{:02X}", memory.read::<true>(cart, address)))
+                        }
                         "D" => {
                             address -= 2;
-                            memory.read_word::<true>(cart, address).map(|val| format!("{val:04X}")).ok()
+                            Some(format!("{:04X}", memory.read_word::<true>(cart, address)))
                         }
                         _ => None,
                     };
@@ -188,12 +188,11 @@ pub fn generate_table() -> HashMap<Opcode, OpcodeDescriptor> {
         }
     }
 
-    
     table.insert(0xC0, op!("ret nz", 1));
     table.insert(0xD0, op!("ret nc", 1));
     table.insert(0xE0, op!("ld", 2, "(FF00 + %S), a"));
     table.insert(0xF0, op!("ld", 2, "a, (FF00 + %S)"));
-    
+
     table.insert(0xC1, op!("pop", 1, "bc"));
     table.insert(0xD1, op!("pop", 1, "de"));
     table.insert(0xE1, op!("pop", 1, "hl"));
@@ -206,7 +205,7 @@ pub fn generate_table() -> HashMap<Opcode, OpcodeDescriptor> {
 
     table.insert(0xC3, op!("jp", 3, "%D"));
     table.insert(0xF3, op!("di", 1));
-    
+
     table.insert(0xC4, op!("call nz", 3, "%D"));
     table.insert(0xD4, op!("call nc", 3, "%D"));
 
@@ -219,7 +218,7 @@ pub fn generate_table() -> HashMap<Opcode, OpcodeDescriptor> {
     table.insert(0xD6, op!("sub", 2, "a, %S"));
     table.insert(0xE6, op!("and", 2, "a, %S"));
     table.insert(0xF6, op!("or", 2, "a, %S"));
-    
+
     table.insert(0xC7, op!("rst", 1, "0x00"));
     table.insert(0xD7, op!("rst", 1, "0x10"));
     table.insert(0xE7, op!("rst", 1, "0x20"));
@@ -229,35 +228,37 @@ pub fn generate_table() -> HashMap<Opcode, OpcodeDescriptor> {
     table.insert(0xD8, op!("ret c", 1));
     table.insert(0xE8, op!("add", 2, "sp, %I"));
     table.insert(0xF8, op!("ld", 2, "hl, sp + %I"));
-    
+
     table.insert(0xC9, op!("ret", 1));
     table.insert(0xD9, op!("reti", 1));
     table.insert(0xE9, op!("jp", 1, "hl"));
     table.insert(0xF9, op!("ld", 1, "sp, hl"));
-    
+
     table.insert(0xCA, op!("jp z", 3, "%D"));
     table.insert(0xDA, op!("jp c", 3, "%D"));
     table.insert(0xEA, op!("ld", 3, "(%D), a"));
     table.insert(0xFA, op!("ld", 3, "a, (%D)"));
-    
+
     table.insert(0xCB, op!("CB", 2, "%S"));
     table.insert(0xFB, op!("ei", 1));
-    
+
     table.insert(0xCC, op!("call z", 3, "%D"));
     table.insert(0xDC, op!("call c", 3, "%D"));
-    
+
     table.insert(0xCD, op!("call", 3, "%D"));
 
     table.insert(0xCE, op!("adc", 2, "a, %S"));
     table.insert(0xDE, op!("sbc", 2, "a, %S"));
     table.insert(0xEE, op!("xor", 2, "a, %S"));
     table.insert(0xFE, op!("cp", 2, "a, %S"));
-        
+
     table.insert(0xCF, op!("rst", 1, "0x08"));
     table.insert(0xDF, op!("rst", 1, "0x18"));
     table.insert(0xEF, op!("rst", 1, "0x28"));
     table.insert(0xFF, op!("rst", 1, "0x38"));
 
-
-    table.into_iter().map(|(k, v)| (Opcode(k as u8), v)).collect()
+    table
+        .into_iter()
+        .map(|(k, v)| (Opcode(k as u8), v))
+        .collect()
 }

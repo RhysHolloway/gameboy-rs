@@ -107,7 +107,6 @@ dependencies = [
  "pixels",
  "rfd",
  "tracing",
- "web-time",
 ]
 
 [[package]]
@@ -836,6 +835,9 @@ dependencies = [
 [[package]]
 name = "gameboy-core"
 version = "0.1.0"
+dependencies = [
+ "web-time",
+]
 
 [[package]]
 name = "gethostname"

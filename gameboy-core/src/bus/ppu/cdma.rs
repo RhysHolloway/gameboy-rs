@@ -1,22 +1,32 @@
 use crate::bus::Bus;
-use crate::bus::ppu::Ppu;
+use crate::bus::ppu::registers::PpuRegisters;
 use crate::cpu::{CycleResult, ExecutionType};
 use crate::util::Address;
-use crate::{Cartridge, Cycles, MemoryError, Width};
+use crate::{Cartridge, Cycles, Width};
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Cdma {
-    hdma12: [u8; 2],
-    hdma34: [u8; 2],
+    source: Width,
+    destination: Width,
     hdma5: u8,
-    transfer: Option<CdmaState>,
+    transfer: Option<Transfer>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct CdmaState {
+#[derive(Clone, Debug)]
+struct Transfer {
     source: Width,
     destination: Width,
     index: Width,
+    length: Width,
+    hdma: bool,
+}
+
+impl Transfer {
+    const BLOCK_SIZE: Width = 0x10;
+
+    fn remaining(&self) -> u8 {
+        (self.length - self.index / Self::BLOCK_SIZE) as u8 - 1
+    }
 }
 
 impl Cdma {
@@ -26,88 +36,102 @@ impl Cdma {
     pub const ADDRESS_HDMA4: Address = Address::new(0xFF54); // CGB only, HDMA destination low
     pub const ADDRESS_HDMA5: Address = Address::new(0xFF55); // CGB only, HDMA length/mode
 
-    pub const fn is_active(&self, ppu: &Ppu) -> bool {
-        self.transfer.is_some() && (!self.hblank_mode() || ppu.mode() == Ppu::HBLANK)
-    }
-
-    pub(crate) const fn read(&self, address: &Address) -> Result<u8, MemoryError> {
+    pub(crate) const fn read(&self, address: &Address) -> u8 {
         match address {
-            &Self::ADDRESS_HDMA5 => Ok(self.hdma5 | if self.transfer.is_some() { 0x80 } else { 0 }),
-            _ => Err(MemoryError::Read("CGB DMA", address.index())),
-        }
-    }
-
-    pub(crate) const fn write(&mut self, address: &Address, value: u8) {
-        match address {
-            &Self::ADDRESS_HDMA1 => self.hdma12[0] = value,
-            &Self::ADDRESS_HDMA2 => self.hdma12[1] = value & 0xF0,
-            &Self::ADDRESS_HDMA3 => self.hdma34[0] = value & 0x1F,
-            &Self::ADDRESS_HDMA4 => self.hdma34[1] = value & 0xF0,
-            &Self::ADDRESS_HDMA5 => match self.transfer.is_some() && self.hblank_mode() {
-                true => {
-                    if value & 0x80 == 0 {
-                        self.transfer = None;
-                    }
-                }
-                false => {
-                    self.hdma5 = value & 0x7F;
-                    self.transfer = Some(CdmaState {
-                        source: u16::from_be_bytes(self.hdma12),
-                        destination: u16::from_be_bytes(self.hdma34),
-                        index: 0,
-                    });
-                }
-            },
+            &Self::ADDRESS_HDMA1
+            | &Self::ADDRESS_HDMA2
+            | &Self::ADDRESS_HDMA3
+            | &Self::ADDRESS_HDMA4 => u8::MAX,
+            &Self::ADDRESS_HDMA5 => self.hdma5,
             _ => unreachable!(),
         }
     }
 
-    const fn length(&self) -> Width {
-        ((self.hdma5 & 0x7F) + 1) as Width * 16
-    }
-
-    const fn hblank_mode(&self) -> bool {
-        self.hdma5 & (1 << 7) != 0
-    }
-
-    pub(crate) fn cycle(
-        mut self,
-        result: &CycleResult,
-        cart: &dyn Cartridge,
-        bus: &mut Bus,
-    ) -> Result<Cycles, MemoryError> {
-        if matches!(result.kind, ExecutionType::Halt | ExecutionType::Stop) {
-            return Ok(Cycles(0));
-        }
-        let length = self.length();
-        let hblank_mode = self.hblank_mode();
-        let mut vram_cycles: usize = 0;
-        if let Some(CdmaState {
-            source,
-            destination,
-            index,
-        }) = self.transfer.as_mut()
-        {
-            vram_cycles = if hblank_mode {
-                0x10
-            } else {
-                result.cycles.t() / 2
-            } as usize;
-            for _ in 0..vram_cycles {
-                let value = bus
-                    .read::<true>(cart, Address::new(*source + *index))
-                    .unwrap_or(0xFF);
-                bus.ppu
-                    .vram
-                    .write((*destination + *index) as usize, value)?;
-                *index += 1;
-                if *index >= length {
-                    self.transfer = None;
-                    break;
-                }
+    pub(crate) fn write(&mut self, address: &Address, value: u8) {
+        match address {
+            &Self::ADDRESS_HDMA1 => self.source = (self.source & 0x00FF) | ((value as Width) << 8),
+            &Self::ADDRESS_HDMA2 => self.source = (self.source & 0xFF00) | (value as Width),
+            &Self::ADDRESS_HDMA3 => {
+                self.destination = (self.destination & 0x00FF) | ((value as Width) << 8)
             }
+            &Self::ADDRESS_HDMA4 => {
+                self.destination = (self.destination & 0xFF00) | (value as Width)
+            }
+            &Self::ADDRESS_HDMA5 => {
+                if let Some(transfer) = self.transfer.as_ref() {
+                    if transfer.hdma {
+                        if value & 0x80 == 0 {
+                            self.hdma5 = 0x80 | transfer.remaining();
+                            self.transfer = None;
+                        }
+                        return;
+                    }
+                }
+
+                self.hdma5 = value & 0x7F;
+                self.transfer = Some(Transfer {
+                    source: self.source & 0xFFF0,
+                    destination: (self.destination & 0x1FF0) | 0x8000,
+                    length: ((value & 0x7F) + 1) as Width * Transfer::BLOCK_SIZE,
+                    hdma: value & 0x80 != 0,
+                    index: 0,
+                });
+            }
+            _ => unreachable!(),
         }
-        bus.cdma = self;
-        Ok(Cycles(vram_cycles * 4))
+    }
+}
+
+impl Default for Cdma {
+    fn default() -> Self {
+        Self {
+            source: 0,
+            destination: 0,
+            transfer: None,
+            hdma5: u8::MAX,
+        }
+    }
+}
+
+impl Bus {
+    pub(crate) fn cdma_cycle(&mut self, result: &mut CycleResult, cart: &dyn Cartridge) -> Cycles {
+        if let Some(transfer) = self
+            .cdma
+            .transfer
+            .as_mut()
+            .filter(|transfer| !transfer.hdma || self.ppu.mode() == PpuRegisters::HBLANK)
+            && !matches!(result.kind, ExecutionType::Halt | ExecutionType::Stop)
+        {
+            let cycles = match transfer.hdma {
+                true => Cycles(32), // 0x10 blocks take 32 t-cycles to transfer
+                false => result.cycles,
+            };
+
+            let source = transfer.source;
+            let destination = transfer.destination - 0x8000;
+
+            let start = transfer.index;
+            let end =
+                transfer.index + (cycles.t() as u16).max(transfer.length - transfer.index) as Width;
+
+            if end >= transfer.length {
+                self.cdma.transfer = None;
+                self.cdma.hdma5 = u8::MAX;
+            } else {
+                transfer.index = end;
+                self.cdma.hdma5 = transfer.remaining();
+            }
+
+            for i in start..end {
+                let value = self.read::<true>(cart, Address::new(source + i));
+                self.ppu
+                    .vram
+                    .write(self.ppu.vram.bank((destination + i) as usize), value);
+            }
+
+            cycles
+        } else {
+            Cycles(0)
+        }
     }
 }

@@ -6,7 +6,7 @@ pub struct SerialState {
     sc: u8,
     active: bool,
     cycles: u16,
-    callback: Option<Box<dyn FnMut(u8)>>,
+    pub(super) callback: Option<Box<dyn FnMut(u8)>>,
 }
 
 impl Default for SerialState {
@@ -22,15 +22,9 @@ impl Default for SerialState {
 }
 
 impl SerialState {
-
-    pub fn set_callback(&mut self, callback: Box<dyn FnMut(u8)>) {
-        self.callback = Some(callback);
-    }
-
     const ADDR_SB: Address = Address::new(0xFF01);
     const ADDR_SC: Address = Address::new(0xFF02);
 
-    const LOCATION: &'static str = "Serial IO";
     const INTERRUPT_BIT: u8 = 0b1000;
 
     pub(super) const fn read(&self, address: &Address) -> u8 {

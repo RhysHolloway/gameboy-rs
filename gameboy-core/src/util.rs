@@ -47,14 +47,12 @@ impl Add<Width> for Address {
 }
 
 impl AddAssign<Width> for Address {
-
     fn add_assign(&mut self, rhs: Width) {
         self.0 = self.0.wrapping_add(rhs);
     }
 }
 
 impl SubAssign<Width> for Address {
-
     fn sub_assign(&mut self, rhs: Width) {
         self.0 = self.0.wrapping_sub(rhs);
     }
@@ -101,93 +99,42 @@ pub enum Controls {
 }
 
 #[derive(Clone)]
-pub struct Memory<const SIZE: usize> {
-    location: &'static str,
-    data: Box<[u8; SIZE]>,
+pub struct Memory<const SIZE: usize, T: Sized = u8> {
+    data: Box<[T; SIZE]>,
 }
 
-impl<const SIZE: usize> Memory<SIZE> {
+impl<const SIZE: usize, T: Sized> Default for Memory<SIZE, T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const SIZE: usize, T: Sized> Memory<SIZE, T> {
     pub const SIZE: usize = SIZE;
 
-    pub fn new(location: &'static str) -> Self {
+    pub fn new() -> Self {
         Self {
-            location,
             data: unsafe { Box::new_zeroed().assume_init() },
         }
     }
 }
 
-impl<const SIZE: usize> Memory<SIZE> {
-    pub const fn read(&self, index: usize) -> Result<u8, MemoryError> {
-        if index < Self::SIZE {
-            Ok(self.data[index])
-        } else {
-            Err(MemoryError::Read(self.location, index))
-        }
+impl<const SIZE: usize, T: Sized> Memory<SIZE, T> {
+    pub const fn as_slice(&self) -> &[T; SIZE] {
+        &self.data
     }
 
-    pub const fn write(&mut self, index: usize, value: u8) -> Result<(), MemoryError> {
-        if index < Self::SIZE {
-            self.data[index] = value;
-            Ok(())
-        } else {
-            Err(MemoryError::Write(self.location, index))
-        }
+    pub const fn as_slice_mut(&mut self) -> &mut [T; SIZE] {
+        &mut self.data
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryError {
-    pub location: &'static str,
-    pub kind: MemoryErrorKind,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MemoryErrorKind {
-    Read(usize),
-    Write(usize),
-    IO(&'static str),
-}
-
-impl MemoryError {
-    pub const fn Read(location: &'static str, address: usize) -> Self {
-        Self {
-            location,
-            kind: MemoryErrorKind::Read(address),
-        }
+impl<const SIZE: usize, T: Sized + Copy> Memory<SIZE, T> {
+    pub const fn read(&self, index: usize) -> T {
+        self.data[index]
     }
 
-    pub const fn Write(location: &'static str, address: usize) -> Self {
-        Self {
-            location,
-            kind: MemoryErrorKind::Write(address),
-        }
-    }
-
-    pub const fn IO(location: &'static str, error: &'static str) -> Self {
-        Self {
-            location,
-            kind: MemoryErrorKind::IO(error),
-        }
-    }
-}
-
-impl std::fmt::Display for MemoryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            MemoryErrorKind::Read(address) => write!(
-                f,
-                "Could not read from address {:#04X} in {}",
-                address, self.location
-            ),
-            MemoryErrorKind::Write(address) => write!(
-                f,
-                "Could not write to address {:#04X} in {}",
-                address, self.location
-            ),
-            MemoryErrorKind::IO(error) => {
-                write!(f, "Could not perform IO in {}: {}", self.location, error)
-            }
-        }
+    pub const fn write(&mut self, index: usize, value: T) {
+        self.data[index] = value;
     }
 }

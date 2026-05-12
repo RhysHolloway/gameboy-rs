@@ -9,7 +9,6 @@ enum Select {
     Buttons,
 }
 
-
 pub struct Joypad {
     select: Select,
     state: u8,
@@ -25,7 +24,6 @@ impl Default for Joypad {
 }
 
 impl Joypad {
-
     pub const INTERRUPT_BIT: u8 = 0x10;
 
     pub const fn read(&self) -> u8 {
@@ -39,12 +37,16 @@ impl Joypad {
     pub const fn write(&mut self, value: u8) {
         self.select = match (value & 0x30) >> 4 {
             2 => Select::DPad,
-            1 => Select::Buttons, 
+            1 => Select::Buttons,
             _ => Select::None,
         };
     }
 
-    pub(crate) const fn update(&mut self, interrupts: &mut Interrupts, (control, down): (Controls, bool)) {
+    pub(crate) const fn update(
+        &mut self,
+        interrupts: &mut Interrupts,
+        (control, down): (Controls, bool),
+    ) {
         let bit = 1u8 << control as u8;
         let up = !down;
         self.state = (self.state & !(bit)) | ((up as u8) << control as u8);
@@ -54,5 +56,4 @@ impl Joypad {
             interrupts.set_stop(false);
         }
     }
-
 }

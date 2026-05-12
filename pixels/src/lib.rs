@@ -32,9 +32,8 @@
 use std::sync::Arc;
 
 #[deny(clippy::all)]
-
 // pub use crate::builder::{check_texture_size, PixelsBuilder};
-pub use builder::{check_texture_size, PixelsBuilder};
+pub use builder::{PixelsBuilder, check_texture_size};
 pub use renderers::ScalingRenderer;
 pub extern crate wgpu;
 pub extern crate winit;
@@ -225,7 +224,10 @@ impl SurfaceTexture {
 
         let size = SurfaceSize { width, height };
 
-        Self { window: window.clone(), size }
+        Self {
+            window: window.clone(),
+            size,
+        }
     }
 }
 
@@ -265,9 +267,11 @@ impl Pixels {
         height: u32,
         surface_texture: SurfaceTexture,
     ) -> Result<Self, Error> {
-        PixelsBuilder::new(width, height, surface_texture).build().await
+        PixelsBuilder::new(width, height, surface_texture)
+            .build()
+            .await
     }
-    
+
     /// Change the clear color.
     ///
     /// Allows customization of the background color and the border drawn for non-integer scale
@@ -717,7 +721,7 @@ impl Pixels {
     pub fn render_texture_format(&self) -> wgpu::TextureFormat {
         self.render_texture_format
     }
-    
+
     pub fn resize(&mut self, new_size: &winit::dpi::PhysicalSize<u32>) -> Result<(), TextureError> {
         self.resize_surface(new_size.width, new_size.height)
     }

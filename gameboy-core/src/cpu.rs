@@ -1,8 +1,6 @@
-use std::fmt::Display;
-
+use crate::Cartridge;
 use crate::bus::{Bus, InterruptState};
 use crate::util::{Address, Width};
-use crate::{Cartridge, MemoryError};
 
 use super::Cycles;
 
@@ -23,50 +21,6 @@ impl core::fmt::Display for Opcode {
     }
 }
 
-#[derive(Debug)]
-pub enum CycleError {
-    Bus(Address, MemoryError),
-    Opcode(Address, Opcode, OpcodeError),
-}
-
-impl core::fmt::Display for CycleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CycleError::Bus(address, error) => write!(
-                f,
-                "Could not get interrupt/opcode at memory address {address} (): {error}"
-            ),
-            CycleError::Opcode(address, opcode, error) => write!(
-                f,
-                "Could not execute opcode {opcode} at address {address}, {error}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CycleError {}
-
-#[derive(Debug)]
-pub enum OpcodeError {
-    Bus(MemoryError),
-    Stop,
-}
-
-impl Display for OpcodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpcodeError::Bus(err) => write!(f, "Error while executing opcode: {err}"),
-            OpcodeError::Stop => write!(f, "Ran into stop instruction!"),
-        }
-    }
-}
-
-impl From<MemoryError> for OpcodeError {
-    fn from(err: MemoryError) -> Self {
-        Self::Bus(err)
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum ExecutionType {
     Opcode(Address),
@@ -82,45 +36,31 @@ pub struct CycleResult {
 }
 
 impl CPU {
-    pub fn cycle(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-    ) -> Result<CycleResult, CycleError> {
+    pub fn cycle(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> CycleResult {
         match bus.interrupts.interrupt() {
-            InterruptState::Interrupt(address) => match self.op_call(cart, bus, address) {
-                Ok(()) => Ok(CycleResult {
+            InterruptState::Interrupt(address) => {
+                self.op_call(cart, bus, address);
+                CycleResult {
                     kind: ExecutionType::Interrupt(address),
                     cycles: Cycles(20),
-                }),
-                Err(err) => Err(CycleError::Bus(address, err)),
+                }
+            }
+            InterruptState::Halt => CycleResult {
+                kind: ExecutionType::Halt,
+                cycles: Cycles(4),
             },
-            InterruptState::Halt => {
-                // Handle halt interrupt
-                Ok(CycleResult {
-                    kind: ExecutionType::Halt,
-                    cycles: Cycles(4),
-                })
-            }
-            InterruptState::Stop => {
-                // Handle stop interrupt
-                Ok(CycleResult {
-                    kind: ExecutionType::Stop,
-                    cycles: Cycles(4),
-                })
-            }
+            InterruptState::Stop => CycleResult {
+                kind: ExecutionType::Stop,
+                cycles: Cycles(4),
+            },
             InterruptState::Continue => {
                 let address = Address::new(self.registers[DReg::PC]);
-                let opcode = Opcode(
-                    self.read_next(cart, bus)
-                        .map_err(|e| CycleError::Bus(address, e))?,
-                );
-                self.execute(cart, bus, opcode)
-                    .map(|cycles| CycleResult {
-                        kind: ExecutionType::Opcode(address),
-                        cycles,
-                    })
-                    .map_err(|e| CycleError::Opcode(address, opcode, e))
+                let opcode = Opcode(self.read_next(cart, bus));
+                let cycles = self.execute(cart, bus, opcode);
+                CycleResult {
+                    kind: ExecutionType::Opcode(address),
+                    cycles,
+                }
             }
         }
     }
@@ -130,35 +70,32 @@ impl CPU {
         cart: &mut dyn Cartridge,
         bus: &mut Bus,
         Opcode(opcode): Opcode,
-    ) -> Result<Cycles, OpcodeError> {
+    ) -> Cycles {
         let x = opcode >> 6;
         let y = (opcode >> 3) & 7;
         let z = opcode & 7;
         let p = (y >> 1) & 3;
         let q = (y & 1) == 1;
-        Ok(match x {
+        match x {
             0 => match z {
                 0 => match y {
                     0 => Cycles(4),
                     1 => {
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
-                        bus.write_word(cart, address, self.registers[DReg::SP])?;
+                        let address = Address::new(self.read_next_u16(cart, bus));
+                        bus.write_word(cart, address, self.registers[DReg::SP]);
                         Cycles(20)
                     }
                     2 => {
                         let _ = self.read_next(cart, bus);
-                        bus.timer.reset_div();
-                        if !bus.cgb.disarm() {
-                            bus.interrupts.set_stop(true);
-                        }
+                        bus.stop();
                         Cycles(4)
                     }
-                    3..=7 => Cycles(8 + 4 * self.op_jr_cc_d(cart, bus, y)? as usize),
+                    3..=7 => Cycles(8 + 4 * self.op_jr_cc_d(cart, bus, y) as usize),
                     8.. => unreachable!(),
                 },
                 1 => match q {
                     false => {
-                        let value = self.read_next_u16(cart, bus)?;
+                        let value = self.read_next_u16(cart, bus);
                         self.registers[DReg::pair1(p)] = value;
                         Cycles(12)
                     }
@@ -171,13 +108,13 @@ impl CPU {
                         2 => {
                             let reg = &mut self.registers[DReg::HL];
                             let addr = Address::new(*reg);
-                            *reg += 1;
+                            *reg = reg.wrapping_add(1);
                             addr
                         }
                         3 => {
                             let reg = &mut self.registers[DReg::HL];
                             let addr = Address::new(*reg);
-                            *reg -= 1;
+                            *reg = reg.wrapping_sub(1);
                             addr
                         }
                         4.. => unreachable!(),
@@ -185,8 +122,8 @@ impl CPU {
                     let a = &mut self.registers[Reg::A];
 
                     match q {
-                        false => bus.write::<false>(cart, address, *a)?,
-                        true => *a = bus.read::<false>(cart, address)?,
+                        false => bus.write::<false>(cart, address, *a),
+                        true => *a = bus.read::<false>(cart, address),
                     };
                     Cycles(8)
                 }
@@ -198,11 +135,11 @@ impl CPU {
                     };
                     Cycles(8)
                 }
-                4 => self.op_inc(cart, bus, y)?,
-                5 => self.op_dec(cart, bus, y)?,
+                4 => self.op_inc(cart, bus, y),
+                5 => self.op_dec(cart, bus, y),
                 6 => {
-                    let value = self.read_next(cart, bus)?;
-                    self.registers.write_index(cart, bus, y, value)?;
+                    let value = self.read_next(cart, bus);
+                    self.registers.write_index(cart, bus, y, value);
                     Cycles(8 + 4 * (y == 6) as usize)
                 }
                 7 => {
@@ -243,13 +180,13 @@ impl CPU {
                     Cycles(4)
                 }
                 false => {
-                    let value = self.registers.read_index(cart, bus, z)?;
-                    self.registers.write_index(cart, bus, y, value)?;
+                    let value = self.registers.read_index(cart, bus, z);
+                    self.registers.write_index(cart, bus, y, value);
                     Cycles(4 << (y == 6 || z == 6) as usize)
                 }
             },
             2 => {
-                let value = self.registers.read_index(cart, bus, z)?;
+                let value = self.registers.read_index(cart, bus, z);
                 self.ops_a_math(y, value);
                 Cycles(4 << (z == 6) as usize)
             }
@@ -258,33 +195,27 @@ impl CPU {
                     0..=3 => {
                         let cond = self.subop_cc_flag(y);
                         if cond {
-                            self.op_ret(cart, bus)?;
+                            self.op_ret(cart, bus);
                         }
                         Cycles(8 + 12 * cond as usize)
                     }
                     4 | 6 => {
-                        let address = Address::new(self.read_next(cart, bus)? as Width | 0xFF00);
+                        let address = Address::new(self.read_next(cart, bus) as Width | 0xFF00);
                         if y == 6 {
-                            self.registers[Reg::A] = bus.read::<false>(cart, address)?;
+                            self.registers[Reg::A] = bus.read::<false>(cart, address);
                         } else {
-                            bus.write::<false>(cart, address, self.registers[Reg::A])?;
+                            bus.write::<false>(cart, address, self.registers[Reg::A]);
                         }
                         Cycles(12)
                     }
                     5 => {
-                        self.registers[DReg::SP] = self.subop_add_next_signed::<true>(
-                            cart,
-                            bus,
-                            self.registers[DReg::SP],
-                        )?;
+                        self.registers[DReg::SP] =
+                            self.subop_add_next_signed::<true>(cart, bus, self.registers[DReg::SP]);
                         Cycles(16)
                     }
                     7 => {
-                        self.registers[DReg::HL] = self.subop_add_next_signed::<true>(
-                            cart,
-                            bus,
-                            self.registers[DReg::SP],
-                        )?;
+                        self.registers[DReg::HL] =
+                            self.subop_add_next_signed::<true>(cart, bus, self.registers[DReg::SP]);
                         Cycles(12)
                     }
                     8.. => unreachable!(),
@@ -292,7 +223,7 @@ impl CPU {
                 1 => match q {
                     false => {
                         let dreg = DReg::pair2(p);
-                        let mut value = self.op_pop(cart, bus)?;
+                        let mut value = self.op_pop(cart, bus);
                         if matches!(dreg, DReg::AF) {
                             // ignore four flag bits of AF
                             value = (value & 0xFFF0) | (self.registers[DReg::AF] & 0xF);
@@ -302,11 +233,11 @@ impl CPU {
                     }
                     true => match p {
                         0 => {
-                            self.op_ret(cart, bus)?;
+                            self.op_ret(cart, bus);
                             Cycles(16)
                         }
                         1 => {
-                            self.op_ret(cart, bus)?;
+                            self.op_ret(cart, bus);
                             self.op_ei(bus);
                             Cycles(16)
                         }
@@ -324,7 +255,7 @@ impl CPU {
                 2 => match y {
                     0..=3 => {
                         let cond = self.subop_cc_flag(y);
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
+                        let address = Address::new(self.read_next_u16(cart, bus));
                         if cond {
                             self.op_jump(address);
                         }
@@ -334,19 +265,19 @@ impl CPU {
                         let address = Address::new(self.registers[Reg::C] as Width) + 0xFF00;
                         let a = &mut self.registers[Reg::A];
                         if y == 6 {
-                            *a = bus.read::<false>(cart, address)?;
+                            *a = bus.read::<false>(cart, address);
                         } else {
-                            bus.write::<false>(cart, address, *a)?;
+                            bus.write::<false>(cart, address, *a);
                         }
                         Cycles(8)
                     }
                     5 | 7 => {
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
+                        let address = Address::new(self.read_next_u16(cart, bus));
                         let a = &mut self.registers[Reg::A];
                         if y == 7 {
-                            *a = bus.read::<false>(cart, address)?;
+                            *a = bus.read::<false>(cart, address);
                         } else {
-                            bus.write::<false>(cart, address, *a)?;
+                            bus.write::<false>(cart, address, *a);
                         };
                         Cycles(16)
                     }
@@ -354,11 +285,11 @@ impl CPU {
                 },
                 3 => match y {
                     0 => {
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
+                        let address = Address::new(self.read_next_u16(cart, bus));
                         self.op_jump(address);
                         Cycles(16)
                     }
-                    1 => self.op_cb(cart, bus)?,
+                    1 => self.op_cb(cart, bus),
                     6 => {
                         self.op_di(bus);
                         Cycles(4)
@@ -372,10 +303,10 @@ impl CPU {
                 },
                 4 => match y < 4 {
                     true => {
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
+                        let address = Address::new(self.read_next_u16(cart, bus));
                         let cond = self.subop_cc_flag(y);
                         if cond {
-                            self.op_call(cart, bus, address)?;
+                            self.op_call(cart, bus, address);
                         }
                         Cycles(12 + 12 * cond as usize)
                     }
@@ -384,65 +315,53 @@ impl CPU {
                 5 => match q {
                     true => {
                         assert!(p == 0);
-                        let address = Address::new(self.read_next_u16(cart, bus)?);
-                        self.op_call(cart, bus, address)?;
+                        let address = Address::new(self.read_next_u16(cart, bus));
+                        self.op_call(cart, bus, address);
                         Cycles(24)
                     }
                     false => {
-                        self.op_push(cart, bus, self.registers[DReg::pair2(p)])?;
+                        self.op_push(cart, bus, self.registers[DReg::pair2(p)]);
                         Cycles(16)
                     }
                 },
                 6 => {
-                    let value = self.read_next(cart, bus)?;
+                    let value = self.read_next(cart, bus);
                     self.ops_a_math(y, value);
                     Cycles(8)
                 }
                 7 => {
-                    self.op_call(cart, bus, Address::new(y as Width * 8))?;
+                    self.op_call(cart, bus, Address::new(y as Width * 8));
                     Cycles(16)
                 }
                 8.. => unreachable!(),
             },
             4.. => unreachable!(),
-        })
+        }
     }
 
     fn op_jump(&mut self, address: Address) {
         self.registers[DReg::PC] = address.value();
     }
 
-    fn op_push(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-        value: u16,
-    ) -> Result<(), MemoryError> {
+    fn op_push(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus, value: Width) {
         self.registers[DReg::SP] = self.registers[DReg::SP].wrapping_sub(2);
         bus.write_word(cart, Address::new(self.registers[DReg::SP]), value)
     }
 
-    fn op_pop(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> Result<u16, MemoryError> {
-        let value = bus.read_word::<false>(cart, Address::new(self.registers[DReg::SP]))?;
+    fn op_pop(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> Width {
+        let value = bus.read_word::<false>(cart, Address::new(self.registers[DReg::SP]));
         self.registers[DReg::SP] = self.registers[DReg::SP].wrapping_add(2);
-        Ok(value)
+        value
     }
 
-    fn op_call(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-        address: Address,
-    ) -> Result<(), MemoryError> {
-        self.op_push(cart, bus, self.registers[DReg::PC])?;
+    fn op_call(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus, address: Address) {
+        self.op_push(cart, bus, self.registers[DReg::PC]);
         self.op_jump(address);
-        Ok(())
     }
 
-    fn op_ret(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> Result<(), MemoryError> {
-        let address = Address::new(self.op_pop(cart, bus)?);
+    fn op_ret(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) {
+        let address = Address::new(self.op_pop(cart, bus));
         self.op_jump(address);
-        Ok(())
     }
 
     fn op_di(&mut self, bus: &mut Bus) {
@@ -457,9 +376,9 @@ impl CPU {
         &mut self,
         cart: &dyn Cartridge,
         bus: &mut Bus,
-        value: u16,
-    ) -> Result<u16, MemoryError> {
-        let diff = self.read_next(cart, bus)? as i8 as i16 as u16;
+        value: Width,
+    ) -> Width {
+        let diff = self.read_next(cart, bus) as i8 as i16 as u16;
         let result = value.wrapping_add(diff);
         if FLAGS {
             self.registers
@@ -471,8 +390,7 @@ impl CPU {
                 Self::half_carry_add_u8(value as u8, diff as u8),
             );
         }
-        Ok(result)
-        // diff.is_positive()
+        result
     }
 
     #[inline]
@@ -486,13 +404,13 @@ impl CPU {
         }
     }
 
-    fn op_jr_cc_d(&mut self, cart: &dyn Cartridge, bus: &mut Bus, y: u8) -> Result<bool, MemoryError> {
-        let jump = self.subop_add_next_signed::<false>(cart, bus, self.registers[DReg::PC] + 1)?;
+    fn op_jr_cc_d(&mut self, cart: &dyn Cartridge, bus: &mut Bus, y: u8) -> bool {
+        let jump = self.subop_add_next_signed::<false>(cart, bus, self.registers[DReg::PC] + 1);
         let cond = y == 3 || self.subop_cc_flag(y - 4);
         if cond {
             self.registers[DReg::PC] = jump;
         }
-        Ok(cond)
+        cond
     }
 
     fn op_add_hl(&mut self, value: u16) -> Cycles {
@@ -509,13 +427,8 @@ impl CPU {
         Cycles(8)
     }
 
-    fn op_inc(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-        index: u8,
-    ) -> Result<Cycles, MemoryError> {
-        let original = self.registers.read_index(cart, bus, index)?;
+    fn op_inc(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus, index: u8) -> Cycles {
+        let original = self.registers.read_index(cart, bus, index);
 
         let (value, carry) = original.overflowing_add(1);
 
@@ -524,18 +437,13 @@ impl CPU {
         self.registers
             .set_flag(Reg::FLAG_HALF_CARRY, Self::half_carry_add_u8(original, 1));
 
-        self.registers.write_index(cart, bus, index, value)?;
+        self.registers.write_index(cart, bus, index, value);
 
-        Ok(Cycles(4 + 8 * (index == 6) as usize))
+        Cycles(4 + 8 * (index == 6) as usize)
     }
 
-    fn op_dec(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-        index: u8,
-    ) -> Result<Cycles, MemoryError> {
-        let original = self.registers.read_index(cart, bus, index)?;
+    fn op_dec(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus, index: u8) -> Cycles {
+        let original = self.registers.read_index(cart, bus, index);
 
         self.registers.set_flag(Reg::FLAG_NEGATIVE, true);
         self.registers.set_flag(Reg::FLAG_ZERO, original == 1);
@@ -543,9 +451,9 @@ impl CPU {
             .set_flag(Reg::FLAG_HALF_CARRY, Self::half_carry_sub_u8(original, 1));
 
         self.registers
-            .write_index(cart, bus, index, original.wrapping_sub(1))?;
+            .write_index(cart, bus, index, original.wrapping_sub(1));
 
-        Ok(Cycles(4 + 8 * (index == 6) as usize))
+        Cycles(4 + 8 * (index == 6) as usize)
     }
 
     fn ops_a_math(&mut self, op: u8, value: u8) {
@@ -760,11 +668,11 @@ impl CPU {
         self.registers.set_flag(Reg::FLAG_ZERO, result == 0);
     }
 
-    pub fn op_cb(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> Result<Cycles, MemoryError> {
-        let cb = self.read_next(cart, bus)?;
+    pub fn op_cb(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus) -> Cycles {
+        let cb = self.read_next(cart, bus);
         let reg = cb & 7;
         let bits = (cb >> 3) & 7;
-        let mut value = self.registers.read_index(cart, bus, reg)?;
+        let mut value = self.registers.read_index(cart, bus, reg);
         let mut cyc_mult = 8;
         match cb >> 6 {
             0 => match bits {
@@ -786,21 +694,21 @@ impl CPU {
             3 => value |= 1 << bits,    // set bit
             4.. => unreachable!(),
         }
-        self.registers.write_index(cart, bus, reg, value)?;
-        Ok(Cycles(8 + (reg == 6) as usize * cyc_mult))
+        self.registers.write_index(cart, bus, reg, value);
+        Cycles(8 + (reg == 6) as usize * cyc_mult)
     }
 
-    fn read_next(&mut self, cart: &dyn Cartridge, bus: &mut Bus) -> Result<u8, MemoryError> {
-        let value = bus.read::<false>(cart, Address::new(self.registers[DReg::PC]))?;
+    fn read_next(&mut self, cart: &dyn Cartridge, bus: &mut Bus) -> u8 {
+        let value = bus.read::<false>(cart, Address::new(self.registers[DReg::PC]));
         if !bus.interrupts.halt_bug() {
-            self.registers[DReg::PC] += 1;
+            self.registers[DReg::PC] = self.registers[DReg::PC].wrapping_add(1);
         }
-        Ok(value)
+        value
     }
 
-    fn read_next_u16(&mut self, cart: &dyn Cartridge, bus: &mut Bus) -> Result<u16, MemoryError> {
+    fn read_next_u16(&mut self, cart: &dyn Cartridge, bus: &mut Bus) -> Width {
         let value = bus.read_word::<false>(cart, Address::new(self.registers[DReg::PC]));
-        self.registers[DReg::PC] += 2;
+        self.registers[DReg::PC] = self.registers[DReg::PC].wrapping_add(2);
         value
     }
 

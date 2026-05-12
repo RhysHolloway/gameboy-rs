@@ -1,161 +1,109 @@
-use super::mbc_funcs::{ram_banks, rom_banks};
 use crate::Address;
+use crate::cartridge::{ram_banks, rom_banks};
 
 pub struct MBC1 {
     rom: Vec<u8>,
-    ram: Vec<u8>,
-    ram_on: bool,
-    ram_updated: bool,
-    banking_mode: u8,
-    rombank: usize,
-    rambank: usize,
-    has_battery: bool,
-    rombanks: usize,
-    rambanks: usize,
+    ram: Box<[u8]>,
+    ram_enabled: bool,
+    bank_mode: bool,
+    bank_bits: u8,
+    rom_bank_lower: u8,
+    rom_banks: u8,
+    ram_banks: u8,
 }
 
 impl MBC1 {
-    pub fn from_vec(data: Vec<u8>) -> MBC1 {
-        let (has_battery, rambanks) = match data[0x147] {
-            0x02 => (false, ram_banks(data[0x149])),
-            0x03 => (true, ram_banks(data[0x149])),
-            _ => (false, 0),
-        };
-        let rombanks = rom_banks(data[0x148]);
-        let ramsize = rambanks * 0x2000;
+    const fn rom_bank(&self) -> u8 {
+        match self.bank_mode {
+            false => self.rom_bank_lower,
+            true => self.rom_bank_lower | (self.bank_bits << 5),
+        }
+    }
 
-        let res = MBC1 {
-            rom: data,
-            ram: ::std::iter::repeat(0u8).take(ramsize).collect(),
-            ram_on: false,
-            banking_mode: 0,
-            rombank: 1,
-            rambank: 0,
-            ram_updated: false,
-            has_battery: has_battery,
-            rombanks: rombanks,
-            rambanks: rambanks,
-        };
-
-        res
+    const fn ram_bank(&self) -> Option<u8> {
+        if self.ram_enabled {
+            if self.ram_banks == 4 && !self.bank_mode {
+                return Some(self.bank_bits);
+            } else if self.ram_banks > 0 {
+                return Some(0);
+            }
+        }
+        None
     }
 }
 
 impl super::Cartridge for MBC1 {
+    fn new(data: impl AsRef<[u8]>) -> Self
+    where
+        Self: Sized,
+    {
+        let data = data.as_ref();
+
+        let ram_banks = match data[0x147] {
+            0x02 | 0x03 => ram_banks(&data),
+            _ => 0,
+        };
+
+        Self {
+            rom: data.to_vec(),
+            ram: unsafe { Box::new_zeroed_slice(ram_banks as usize * 0x2000).assume_init() },
+            ram_enabled: false,
+            bank_mode: false,
+            bank_bits: 0,
+            rom_bank_lower: 1,
+            rom_banks: rom_banks(&data) as u8,
+            ram_banks,
+        }
+    }
+
     fn rom(&self) -> &[u8] {
         self.rom.as_slice()
     }
 
     fn ram(&self) -> &[u8] {
-        self.ram.as_slice()
+        &self.ram
     }
 
     fn ram_mut(&mut self) -> &mut [u8] {
-        self.ram.as_mut_slice()
+        &mut self.ram
     }
 
-    fn read(&self, address: Address) -> Result<u8, crate::MemoryError> {
+    fn read(&self, address: Address) -> u8 {
         match address.value() {
-            0x0000..=0x7FFF => Ok(self.readrom(address.value())),
-            0xA000..=0xBFFF => Ok(self.readram(address.value())),
-            _ => Err(crate::MemoryError::Read("MBC1", address.index())),
+            0x0000..=0x3FFF => self.rom[address.index()],
+            0x4000..=0x7FFF => {
+                self.rom[self.rom_bank() as usize * 0x4000 | (address.index() & 0x3FFF)]
+            }
+            0xA000..=0xBFFF => self
+                .ram_bank()
+                .map(|bank| self.ram[(bank as usize * 0x2000) | (address.index() & 0x1FFF)])
+                .unwrap_or(0xFF),
+            _ => unreachable!(),
         }
     }
 
-    fn write(&mut self, address: Address, value: u8) -> Result<(), crate::MemoryError> {
+    fn write(&mut self, address: Address, value: u8) {
         match address.value() {
-            0x0000..=0x7FFF => self.writerom(address.value() as u16, value),
-            0xA000..=0xBFFF => self.writeram(address.value() as u16, value),
-            _ => return Err(crate::MemoryError::Write("MBC1", address.index())),
-        }
-        Ok(())
-    }
-
-    fn new(data: impl AsRef<[u8]>) -> Self
-    where
-        Self: Sized,
-    {
-        Self::from_vec(data.as_ref().to_vec())
-    }
-}
-
-impl MBC1 {
-    fn readrom(&self, a: u16) -> u8 {
-        let bank = if a < 0x4000 {
-            if self.banking_mode == 0 {
-                0
-            } else {
-                self.rombank & 0xE0
-            }
-        } else {
-            self.rombank
-        };
-        let idx = bank * 0x4000 | ((a as usize) & 0x3FFF);
-        *self.rom.get(idx).unwrap_or(&0xFF)
-    }
-    fn readram(&self, a: u16) -> u8 {
-        if !self.ram_on {
-            return 0xFF;
-        }
-        let rambank = if self.banking_mode == 1 {
-            self.rambank
-        } else {
-            0
-        };
-        self.ram[(rambank * 0x2000) | ((a & 0x1FFF) as usize)]
-    }
-
-    fn writerom(&mut self, a: u16, v: u8) {
-        match a {
-            0x0000..=0x1FFF => {
-                self.ram_on = v & 0xF == 0xA;
-            }
+            0x0000..=0x1FFF => self.ram_enabled = value & 0xF == 0xA,
             0x2000..=0x3FFF => {
-                let lower_bits = match (v as usize) & 0x1F {
-                    0 => 1,
-                    n => n,
-                };
-                self.rombank = ((self.rombank & 0x60) | lower_bits) % self.rombanks;
+                self.rom_bank_lower = 1.max(value & 0x1F) % self.rom_banks;
             }
             0x4000..=0x5FFF => {
-                if self.rombanks > 0x20 {
-                    let upper_bits = (v as usize & 0x03) % (self.rombanks >> 5);
-                    self.rombank = self.rombank & 0x1F | (upper_bits << 5)
-                }
-                if self.rambanks > 1 {
-                    self.rambank = (v as usize) & 0x03;
+                if self.ram_banks == 4 || self.rom_banks >= 0x40 {
+                    self.bank_bits = value & 0x03;
                 }
             }
             0x6000..=0x7FFF => {
-                self.banking_mode = v & 0x01;
+                if self.ram_banks > 1 || self.rom_banks > 0x20 {
+                    self.bank_mode = value & 0x01 == 1;
+                }
             }
-            _ => panic!("Could not write to {:04X} (MBC1)", a),
+            0xA000..=0xBFFF => {
+                if let Some(bank) = self.ram_bank() {
+                    self.ram[(bank as usize * 0x2000) | (address.index() & 0x1FFF)] = value;
+                }
+            }
+            _ => unreachable!(),
         }
-    }
-
-    fn writeram(&mut self, a: u16, v: u8) {
-        if !self.ram_on {
-            return;
-        }
-        let rambank = if self.banking_mode == 1 {
-            self.rambank
-        } else {
-            0
-        };
-        let address = (rambank * 0x2000) | ((a & 0x1FFF) as usize);
-        if address < self.ram.len() {
-            self.ram[address] = v;
-            self.ram_updated = true;
-        }
-    }
-
-    fn is_battery_backed(&self) -> bool {
-        self.has_battery
-    }
-
-    fn check_and_reset_ram_updated(&mut self) -> bool {
-        let result = self.ram_updated;
-        self.ram_updated = false;
-        result
     }
 }

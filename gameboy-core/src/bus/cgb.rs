@@ -1,11 +1,15 @@
+use crate::util::Address;
 use crate::{Cartridge, Width};
-use crate::util::{Address, MemoryError};
 
 #[derive(Default)]
 pub struct Cgb {
     enabled: bool,
-    key1: u8,
-    cdma: super::ppu::Cdma,
+    prepare_speed_switch: bool,
+    double_speed: bool,
+    ff72: u8,
+    ff73: u8,
+    ff74: u8,
+    ff75: u8,
 }
 
 impl Cgb {
@@ -16,46 +20,52 @@ impl Cgb {
         self.enabled = cart.color();
     }
 
-    pub const fn read_mapped(&self, address: &Address) -> Result<u8, MemoryError> {
+    pub const fn read_mapped(&self, address: &Address) -> u8 {
         if !self.enabled {
-            return Ok(u8::MAX);
-        }
-        Ok(match address.value() {
-            Self::ADDRESS_KEY0 => 0,
-            Self::ADDRESS_KEY1 => self.key1,
-            0xFF51..=0xFF55 => match self.cdma.read(address) {
-                Ok(value) => value,
-                Err(err) => return Err(err),
-            },
-            _ => unreachable!(),
-        })
-    }
-
-    pub const fn write_mapped(&mut self, address: &Address, value: u8) -> Result<(), MemoryError> {
-        if !self.enabled {
-            return Ok(());
+            return u8::MAX;
         }
         match address.value() {
-            Self::ADDRESS_KEY1 => self.key1 = value & 1,
-            0xFF51..=0xFF55 => self.cdma.write(&address, value),
-            _ => return Err(MemoryError::Write("CGB", address.index())),
+            Self::ADDRESS_KEY0 => u8::MAX,
+            Self::ADDRESS_KEY1 => {
+                0x7E | ((self.double_speed as u8) << 7) | self.prepare_speed_switch as u8
+            }
+            0xFF72 => self.ff72,
+            0xFF73 => self.ff73,
+            0xFF74 => self.ff74,
+            0xFF75 => self.ff75 | 0x8F,
+            _ => unreachable!(),
         }
-        Ok(())
+    }
+
+    pub const fn write_mapped(&mut self, address: &Address, value: u8) {
+        if !self.enabled {
+            return;
+        }
+        match address.value() {
+            Self::ADDRESS_KEY0 => (),
+            Self::ADDRESS_KEY1 => self.prepare_speed_switch = value & 1 != 0,
+            0xFF72 => self.ff72 = value,
+            0xFF73 => self.ff73 = value,
+            0xFF74 => self.ff74 = value,
+            0xFF75 => self.ff75 = value,
+            _ => unreachable!(),
+        }
     }
 
     pub fn double_speed(&self) -> bool {
-        self.key1 & 0b10000000 != 0
+        self.double_speed
     }
 
     pub fn disarm(&mut self) -> bool {
-        if self.key1 & 1 == 1 {
-            self.key1 = !1;
+        if self.prepare_speed_switch {
+            self.prepare_speed_switch = false;
+            self.double_speed = !self.double_speed;
             true
         } else {
             false
         }
     }
-    
+
     pub(crate) const fn enabled(&self) -> bool {
         self.enabled
     }

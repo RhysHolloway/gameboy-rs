@@ -1,6 +1,6 @@
 use std::ops::{Index, IndexMut};
 
-use crate::{Cartridge, MemoryError};
+use crate::Cartridge;
 use crate::bus::Bus;
 use crate::util::Address;
 
@@ -109,24 +109,18 @@ impl Registers {
         }
     }
 
-    pub fn read_index(&self, cart: &dyn Cartridge, bus: &Bus, index: u8) -> Result<u8, MemoryError> {
+    pub fn read_index(&self, cart: &dyn Cartridge, bus: &Bus, index: u8) -> u8 {
         match index {
             6 => bus.read::<false>(cart, Address::new(self[DReg::HL])),
-            0..=5 | 7 => Ok(self[Reg::pair(index)]),
+            0..=5 | 7 => self[Reg::pair(index)],
             8.. => unreachable!(),
         }
     }
 
-    pub fn write_index(
-        &mut self,
-        cart: &mut dyn Cartridge,
-        bus: &mut Bus,
-        index: u8,
-        value: u8,
-    ) -> Result<(), MemoryError> {
+    pub fn write_index(&mut self, cart: &mut dyn Cartridge, bus: &mut Bus, index: u8, value: u8) {
         match index {
             6 => bus.write::<false>(cart, Address::new(self[DReg::HL]), value),
-            0..=5 | 7 => Ok(self[Reg::pair(index)] = value),
+            0..=5 | 7 => self[Reg::pair(index)] = value,
             8.. => unreachable!(),
         }
     }

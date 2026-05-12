@@ -1,55 +1,56 @@
 use crate::bus::Bus;
 use crate::util::Address;
-use crate::{Cartridge, Cycles, MemoryError, Width};
+use crate::{Cartridge, Cycles, Width};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Dma {
     source: Address,
-    index: Width,
+    clock: Width,
 }
 
 impl Default for Dma {
     fn default() -> Self {
         Self {
             source: Address::new(0),
-            index: 160,
+            clock: Self::END,
         }
     }
 }
 
 impl Dma {
+    const LENGTH: Width = 160;
+    // t cycles * length of data
+    const END: Width = Self::LENGTH * 4;
+
     pub const fn is_active(&self) -> bool {
-        self.index < 160
+        self.clock < Self::END
     }
 
-    pub(crate) const fn read(&self) -> u8 {
+    pub const fn read(&self) -> u8 {
         (self.source.value() >> 8) as u8
     }
 
     pub(crate) const fn write(&mut self, value: u8) {
         self.source = Address::new((value as Width) << 8);
-        self.index = 0;
+        self.clock = 0;
     }
+}
 
-    pub(crate) fn cycle(
-        mut self,
-        cycles: &Cycles,
-        cart: &dyn Cartridge,
-        bus: &mut Bus,
-    ) -> Result<(), MemoryError> {
-        if self.is_active() {
-            for _ in 0..cycles.m() {
-                let value = bus
-                    .read::<true>(cart, self.source + self.index)
-                    .unwrap_or(0xFF);
-                bus.ppu.voam.write(self.index as usize, value)?;
-                self.index += 1;
-                if self.index >= 160 {
-                    break;
-                }
+impl Bus {
+    pub(crate) fn cycle_dma(&mut self, cycles: &Cycles, cart: &dyn Cartridge) {
+        if !self.dma.is_active() {
+            return;
+        }
+        for _ in 0..cycles.t() {
+            if self.dma.clock % 4 == 0 {
+                let index = self.dma.clock / 4;
+                let value = self.read::<true>(cart, self.dma.source + index);
+                self.ppu.voam.write(index as usize, value);
+            }
+            self.dma.clock += 1;
+            if !self.dma.is_active() {
+                break;
             }
         }
-        bus.dma = self;
-        Ok(())
     }
 }

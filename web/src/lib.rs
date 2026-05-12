@@ -22,7 +22,13 @@ impl EmulatorPlatform for Web {
         {
             use app::pixels::winit::platform::web::WindowAttributesExtWebSys;
 
-            let canvas = web_sys::window().unwrap_throw().document().unwrap_throw().get_element_by_id("gameboy-canvas").unwrap_throw().unchecked_into();
+            let canvas = web_sys::window()
+                .unwrap_throw()
+                .document()
+                .unwrap_throw()
+                .get_element_by_id("gameboy-canvas")
+                .unwrap_throw()
+                .unchecked_into();
 
             let window = event_loop
                 .create_window(
@@ -35,12 +41,14 @@ impl EmulatorPlatform for Web {
             let proxy = proxy.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 proxy
-                    .send_event(EmulatorEvent::CreateGraphics(GraphicsState::new(window).await))
+                    .send_event(EmulatorEvent::CreateGraphics(
+                        GraphicsState::new(window).await,
+                    ))
                     .unwrap_or_else(|e| panic!("Could not send graphics event with error {e}"));
             });
         }
     }
-    
+
     fn run_async(future: impl std::future::Future<Output = ()> + Send + 'static) {
         wasm_bindgen_futures::spawn_local(future);
     }

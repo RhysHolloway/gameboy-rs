@@ -6,9 +6,6 @@ pub mod util;
 pub use crate::cartridge::*;
 pub use crate::util::*;
 
-use self::cpu::CycleError;
-
-
 #[derive(Default)]
 pub struct GameboyColor {
     pub cpu: cpu::CPU,
@@ -18,7 +15,7 @@ pub struct GameboyColor {
 /**
  * T-Cycles
  */
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cycles(usize);
 
 impl Cycles {
@@ -32,10 +29,6 @@ impl Cycles {
 
     pub const fn m(&self) -> usize {
         self.0 / 4
-    }
-
-    pub const fn split(self, double: bool, vram: Cycles) -> (Self, Self) {
-        (Self(self.0 + vram.0), Self(self.0 * if double { 2 } else { 1 } + vram.0))
     }
 }
 
@@ -57,6 +50,22 @@ impl std::ops::AddAssign for Cycles {
     }
 }
 
+impl std::ops::Mul<usize> for Cycles {
+    type Output = Self;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        Self(self.0 * rhs)
+    }
+}
+
+impl std::ops::Div<usize> for Cycles {
+    type Output = Self;
+
+    fn div(self, rhs: usize) -> Self::Output {
+        Self(self.0 / rhs)
+    }
+}
+
 pub struct GameboyCycle {
     pub cpu: cpu::CycleResult,
     pub render: bool,
@@ -68,15 +77,10 @@ impl GameboyColor {
         cartridge::load(data)
     }
 
-    pub fn cycle(
-        &mut self,
-        cart: &mut dyn Cartridge
-    ) -> Result<GameboyCycle, CycleError> {
-        let cpu = self.cpu.cycle(cart, &mut self.bus)?;
-        self.bus
-            .cycle(cart, &cpu)
-            .map(|render| GameboyCycle { cpu, render })
-            .map_err(|e| CycleError::Bus(self.cpu.pc(), e))
+    pub fn cycle(&mut self, cart: &mut dyn Cartridge) -> GameboyCycle {
+        let mut cpu = self.cpu.cycle(cart, &mut self.bus);
+        let render = self.bus.cycle(cart, &mut cpu);
+        GameboyCycle { cpu, render }
     }
 
     pub fn reset(&mut self, cart: &dyn Cartridge) {

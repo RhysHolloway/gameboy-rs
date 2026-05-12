@@ -4,7 +4,6 @@ pub struct Ir {
 }
 
 impl Ir {
-
     pub const fn read(&self) -> u8 {
         self.i
     }

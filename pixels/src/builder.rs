@@ -249,8 +249,7 @@ impl PixelsBuilder {
         let surface = instance.create_surface(self.surface_texture.window)?;
         let compatible_surface = Some(&surface);
         let request_adapter_options = &self.request_adapter_options;
-        let adapter = match wgpu::util::initialize_adapter_from_env(&instance, compatible_surface)
-        {
+        let adapter = match wgpu::util::initialize_adapter_from_env(&instance, compatible_surface) {
             Ok(adapter) => adapter,
             Err(..) => instance
                 .request_adapter(request_adapter_options.as_ref().unwrap_or(

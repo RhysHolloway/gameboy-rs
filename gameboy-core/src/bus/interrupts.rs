@@ -11,8 +11,8 @@ enum PauseState {
 
 #[derive(Debug, Default)]
 pub struct Interrupts {
-    pub i: u8,
-    pub ie: u8,
+    pub(crate) i: u8,
+    pub(crate) ie: u8,
     ime: Ime,
     pause: PauseState,
     halt_bug: bool,
@@ -45,7 +45,6 @@ impl Ime {
 }
 
 impl Interrupts {
-
     const fn interrupt_bits(&self) -> u8 {
         self.ie & self.i & 0x1F
     }
@@ -67,7 +66,7 @@ impl Interrupts {
                     true => InterruptState::Halt,
                     false => InterruptState::Continue,
                 };
-            },
+            }
             bit => {
                 if !ime {
                     self.pause = PauseState::None;
@@ -79,7 +78,7 @@ impl Interrupts {
                 self.pause = PauseState::None;
                 self.ime.state = false;
                 return InterruptState::Interrupt(Address::new(0x40 + 8 * bit));
-            },
+            }
         }
     }
 
@@ -95,7 +94,11 @@ impl Interrupts {
     }
 
     pub(crate) const fn set_stop(&mut self, value: bool) {
-        self.pause = if value { PauseState::Stop } else { PauseState::None };
+        self.pause = if value {
+            PauseState::Stop
+        } else {
+            PauseState::None
+        };
     }
 
     pub(crate) const fn set_ime(&mut self, value: bool) {
@@ -110,6 +113,11 @@ impl Interrupts {
     #[must_use]
     pub const fn stopped(&self) -> bool {
         matches!(self.pause, PauseState::Stop)
+    }
+
+    #[must_use]
+    pub const fn i(&self) -> u8 {
+        self.i
     }
 
     #[must_use]
