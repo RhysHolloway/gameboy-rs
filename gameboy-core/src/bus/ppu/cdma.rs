@@ -25,7 +25,7 @@ impl Transfer {
     const BLOCK_SIZE: Width = 0x10;
 
     fn remaining(&self) -> u8 {
-        (self.length - self.index / Self::BLOCK_SIZE) as u8 - 1
+        ((self.length - self.index / Self::BLOCK_SIZE) as u8).wrapping_sub(1)
     }
 }
 
@@ -112,7 +112,7 @@ impl Bus {
 
             let start = transfer.index;
             let end =
-                transfer.index + (cycles.t() as u16).max(transfer.length - transfer.index) as Width;
+                transfer.index + (cycles.t() as u16).min(transfer.length - transfer.index) as Width;
 
             if end >= transfer.length {
                 self.cdma.transfer = None;
