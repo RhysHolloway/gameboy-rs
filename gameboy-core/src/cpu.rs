@@ -21,7 +21,7 @@ impl core::fmt::Display for Opcode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionType {
     Opcode(Address),
     Interrupt(Address),

@@ -84,7 +84,7 @@ impl Interrupts {
 
     pub(crate) const fn set_halt(&mut self) {
         self.pause = PauseState::Halt;
-        self.halt_bug = self.interrupt_bits() != 0;
+        self.halt_bug = !self.ime() && self.interrupt_bits() != 0;
     }
 
     pub(crate) const fn halt_bug(&mut self) -> bool {

@@ -9,7 +9,7 @@ impl Default for Wram {
     fn default() -> Self {
         Self {
             data: Memory::default(),
-            bank: 1,
+            bank: 0,
         }
     }
 }
@@ -36,7 +36,7 @@ impl Wram {
     const fn map(&self, offset: usize) -> usize {
         match offset {
             0x0000..=0x0FFF => offset,
-            0x1000..=0x1FFF => offset + self.bank as usize * Self::BANK_SIZE,
+            0x1000..=0x1FFF => offset + (self.bank as usize * Self::BANK_SIZE),
             _ => unreachable!(),
         }
     }

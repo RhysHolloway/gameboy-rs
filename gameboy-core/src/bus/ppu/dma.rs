@@ -12,18 +12,16 @@ impl Default for Dma {
     fn default() -> Self {
         Self {
             source: Address::new(0),
-            clock: Self::END,
+            clock: Self::LENGTH,
         }
     }
 }
 
 impl Dma {
     const LENGTH: Width = 160;
-    // t cycles * length of data
-    const END: Width = Self::LENGTH * 4;
 
     pub const fn is_active(&self) -> bool {
-        self.clock < Self::END
+        self.clock < Self::LENGTH
     }
 
     pub const fn read(&self) -> u8 {
@@ -41,16 +39,11 @@ impl Bus {
         if !self.dma.is_active() {
             return;
         }
-        for _ in 0..cycles.t() {
-            if self.dma.clock % 4 == 0 {
-                let index = self.dma.clock / 4;
-                let value = self.read::<true>(cart, self.dma.source + index);
-                self.ppu.voam.write(index as usize, value);
-            }
-            self.dma.clock += 1;
-            if !self.dma.is_active() {
-                break;
-            }
+        let start = self.dma.clock;
+        self.dma.clock += cycles.t() as u16;
+        for index in start..self.dma.clock.min(Dma::LENGTH) {
+            let value = self.read::<true>(cart, self.dma.source + index);
+            self.ppu.voam.write(index as usize, value);
         }
     }
 }

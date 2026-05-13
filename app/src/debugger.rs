@@ -11,21 +11,50 @@ use self::opcode::OpcodeDescriptor;
 
 use super::GameboyColor;
 
+mod breakpoint;
 mod opcode;
+
+pub fn read_address(string: &str) -> Option<Width> {
+    if string.starts_with("0x") {
+        Width::from_str_radix(&string[2..], 16).ok()
+    } else {
+        Width::from_str_radix(string, 10).ok()
+    }
+}
 
 pub struct Debugger {
     opcodes: HashMap<Opcode, OpcodeDescriptor>,
-    breakpoint_box: String,
-    breakpoints: HashMap<Address, bool>,
-    breakpoint: bool,
-    delete_mode: bool,
+    breakpoint: breakpoint::BreakpointView,
     step: bool,
     run: bool,
     error: Option<String>,
     serial: Option<Serial>,
+    memory: MemoryView,
     speed_text: String,
     speed: f64,
-    history: VecDeque<ExecutionType>,
+    history: VecDeque<ExecutionHistory>,
+}
+
+struct ExecutionHistory {
+    kind: ExecutionType,
+    count: usize,
+}
+struct MemoryView {
+    addr_text: String,
+    size_text: String,
+    address: Option<Address>,
+    size: usize,
+}
+
+impl Default for MemoryView {
+    fn default() -> Self {
+        Self {
+            addr_text: String::new(),
+            size_text: String::new(),
+            address: None,
+            size: 16,
+        }
+    }
 }
 
 struct Serial {
@@ -38,16 +67,14 @@ impl Debugger {
     pub fn new() -> Self {
         Self {
             opcodes: opcode::generate_table(),
-            breakpoints: Default::default(),
-            breakpoint_box: String::new(),
-            delete_mode: false,
+            breakpoint: Default::default(),
             step: false,
             run: false,
-            breakpoint: false,
             speed_text: String::new(),
             speed: 1.0,
             error: None,
             serial: None,
+            memory: MemoryView::default(),
             history: VecDeque::new(),
         }
     }
@@ -93,19 +120,33 @@ impl Debugger {
     pub fn on_cycle(&mut self, result: CycleResult) {
         match result.kind {
             ExecutionType::Stop | ExecutionType::Halt => {
-                if matches!(
-                    self.history.back(),
-                    Some(ExecutionType::Stop | ExecutionType::Halt)
-                ) {
-                    return;
-                }
+                return;
             }
             _ => (),
         }
 
-        self.history.push_back(result.kind);
-        if self.history.len() > 100 {
-            self.history.pop_front();
+        if self.breakpoint.on_cycle(&result) {
+            self.step = false;
+            self.run = false;
+        }
+
+        match self
+            .history
+            .back_mut()
+            .filter(|prev| prev.kind == result.kind)
+        {
+            Some(prev) => {
+                prev.count += 1;
+            }
+            None => {
+                self.history.push_back(ExecutionHistory {
+                    kind: result.kind,
+                    count: 1,
+                });
+                if self.history.len() > 200 {
+                    self.history.pop_front();
+                }
+            }
         }
 
         self.read_serial();
@@ -140,11 +181,31 @@ impl Debugger {
             ui.columns(4, |cols| {
                 // address space / error
 
-                let mut address = Address::new(gb.cpu.registers[DReg::PC]);
-
                 let opcol = &mut cols[0];
 
-                for i in 0..10 {
+                opcol.columns(4, |cols| {
+                    cols[0].text_edit_singleline(&mut self.memory.addr_text);
+
+                    if egui::Button::new("ADDR").ui(&mut cols[1]).clicked() {
+                        self.memory.address =
+                            read_address(&self.memory.addr_text).map(Address::new);
+                    }
+
+                    cols[2].text_edit_singleline(&mut self.memory.size_text);
+
+                    if egui::Button::new("SIZE").ui(&mut cols[3]).clicked() {
+                        if let Ok(size) = self.memory.size_text.parse::<usize>() {
+                            self.memory.size = size;
+                        }
+                    }
+                });
+
+                let mut address = self
+                    .memory
+                    .address
+                    .unwrap_or_else(|| Address::new(gb.cpu.registers[DReg::PC]));
+
+                for i in 0..self.memory.size {
                     let op = gb.bus.read::<true>(cart, address);
                     let opcode = Opcode(op);
                     let ptr = match i == 0 {
@@ -260,51 +321,7 @@ impl Debugger {
 
                 let bpcol = &mut cols[3];
 
-                // breakpoints
-
-                if egui::Button::new("Delete Mode")
-                    .selected(self.delete_mode)
-                    .ui(bpcol)
-                    .clicked()
-                {
-                    self.delete_mode = !self.delete_mode;
-                }
-
-                let mut remove = None;
-                for (addr, enabled) in &mut self.breakpoints {
-                    if egui::Button::new(format!("{addr}"))
-                        .selected(*enabled)
-                        .ui(bpcol)
-                        .clicked()
-                    {
-                        self.run = false;
-                        match self.delete_mode {
-                            true => {
-                                remove = Some(*addr);
-                            }
-                            false => {
-                                *enabled = !*enabled;
-                            }
-                        }
-                    }
-                }
-                if let Some(addr) = remove {
-                    self.breakpoints.remove(&addr);
-                }
-
-                bpcol.separator();
-
-                bpcol.text_edit_singleline(&mut self.breakpoint_box);
-                if bpcol.button("Add Breakpoint").clicked() {
-                    self.run = false;
-                    match Width::from_str_radix(&self.breakpoint_box, 16) {
-                        Ok(addr) => {
-                            self.breakpoints.insert(Address::new(addr), true);
-                            self.breakpoint_box.clear();
-                        }
-                        Err(..) => (),
-                    }
-                };
+                self.breakpoint.window(bpcol);
 
                 bpcol.separator();
 
@@ -312,29 +329,37 @@ impl Debugger {
                     .id_salt("ophistory")
                     .max_height(window.height as f32 / 2.0)
                     .show(bpcol, |bpcol| {
-                        for (i, addr) in self.history.iter().rev().enumerate() {
+                        for (i, prev) in self.history.iter().rev().enumerate() {
                             let i = -(i as isize);
-                            bpcol.label(format!(
-                                "{i}: {}",
-                                match addr {
-                                    ExecutionType::Interrupt(address) =>
-                                        format!("interrupt jump to {address}"),
-                                    ExecutionType::Halt => "halt".to_string(),
-                                    ExecutionType::Stop => "stop".to_string(),
-                                    ExecutionType::Opcode(address) => {
-                                        format!(
-                                            "{address} {}",
-                                            self.opcodes
-                                                .get(&Opcode(gb.bus.read::<true>(cart, *address)))
-                                                .map(|desc| format!(
-                                                    "({})",
-                                                    desc.format(cart, &gb.bus, *address)
-                                                ))
-                                                .unwrap_or_else(|| "Unknown".to_string())
-                                        )
-                                    }
+
+                            let kind = match &prev.kind {
+                                ExecutionType::Interrupt(address) => {
+                                    format!("interrupt jump to {address}")
                                 }
-                            ));
+                                ExecutionType::Halt => format!("halt"),
+                                ExecutionType::Stop => format!("stop"),
+                                ExecutionType::Opcode(address) => {
+                                    let opcode = Opcode(gb.bus.read::<true>(cart, *address));
+                                    format!(
+                                        "{address}: {opcode} {}",
+                                        self.opcodes
+                                            .get(&opcode)
+                                            .map(|desc| format!(
+                                                "({})",
+                                                desc.format(cart, &gb.bus, *address)
+                                            ))
+                                            .unwrap_or_else(|| format!("Unknown"))
+                                    )
+                                }
+                            };
+
+                            let count = if prev.count > 1 {
+                                format_args!(" (x{})", prev.count)
+                            } else {
+                                format_args!("")
+                            };
+
+                            bpcol.label(format!("{i} | {kind}{count}"));
                         }
                     });
             });
@@ -382,21 +407,7 @@ impl Debugger {
 
     pub fn should_step(&mut self, gb: &GameboyColor) -> bool {
         if self.run {
-            let pc = Address::new(gb.cpu.registers[DReg::PC]);
-            if self.breakpoints.get(&pc).copied().unwrap_or_default() {
-                if !self.breakpoint {
-                    self.step = false;
-                    self.breakpoint = true;
-                    false
-                } else if self.step {
-                    self.breakpoint = false;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                true
-            }
+            self.breakpoint.should_step(&mut self.step, gb)
         } else if self.step {
             self.step = false;
             true
@@ -405,22 +416,11 @@ impl Debugger {
         }
     }
 
-    pub fn pause(&mut self) {
-        self.run = false;
-    }
-
-    pub fn error(&mut self, err: impl std::error::Error) {
-        self.pause();
-        self.error = Some(err.to_string());
-    }
-
     pub fn reset(&mut self, gb: &mut GameboyColor, cart: &dyn Cartridge) {
         self.error = None;
         self.run = false;
         self.step = false;
-        self.breakpoint = false;
-        self.delete_mode = false;
-        self.breakpoint_box.clear();
+        self.breakpoint = Default::default();
         if let Some(serial) = self.serial.as_mut() {
             serial.buffer.clear();
         }
