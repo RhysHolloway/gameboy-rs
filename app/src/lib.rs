@@ -363,7 +363,7 @@ impl Emulator {
         let mut gameboy = GameboyColor::default();
         Self {
             debugger: debugger.then(|| {
-                let mut debugger = Debugger::new();
+                let mut debugger = Debugger::default();
                 gameboy
                     .bus
                     .set_serial_callback(Some(debugger.create_serial_callback()));

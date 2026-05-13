@@ -4,14 +4,14 @@ use crate::{Cartridge, Cycles, Width};
 
 #[derive(Clone, Debug)]
 pub struct Dma {
-    source: Address,
+    source: Width,
     clock: Width,
 }
 
 impl Default for Dma {
     fn default() -> Self {
         Self {
-            source: Address::new(0),
+            source: 0,
             clock: Self::LENGTH,
         }
     }
@@ -25,25 +25,24 @@ impl Dma {
     }
 
     pub const fn read(&self) -> u8 {
-        (self.source.value() >> 8) as u8
+        (self.source >> 8) as u8
     }
 
     pub(crate) const fn write(&mut self, value: u8) {
-        self.source = Address::new((value as Width) << 8);
+        self.source = (value as Width) << 8;
         self.clock = 0;
     }
 }
 
 impl Bus {
     pub(crate) fn cycle_dma(&mut self, cycles: &Cycles, cart: &dyn Cartridge) {
-        if !self.dma.is_active() {
-            return;
-        }
-        let start = self.dma.clock;
-        self.dma.clock += cycles.t() as u16;
-        for index in start..self.dma.clock.min(Dma::LENGTH) {
-            let value = self.read::<true>(cart, self.dma.source + index);
-            self.ppu.voam.write(index as usize, value);
+        if self.dma.is_active() {
+            let start = self.dma.clock;
+            self.dma.clock += cycles.t() as u16;
+            for index in start..self.dma.clock.min(Dma::LENGTH) {
+                let value = self.read::<true>(cart, Address::new(self.dma.source + index));
+                self.ppu.voam.write(index as usize, value);
+            }
         }
     }
 }

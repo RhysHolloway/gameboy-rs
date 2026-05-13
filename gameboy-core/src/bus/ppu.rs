@@ -1,112 +1,26 @@
 use crate::bus::cgb::Cgb;
 use crate::bus::ppu::palette::Palette;
-use crate::bus::ppu::registers::PpuRegisters;
 use crate::util::Address;
 use crate::{Cycles, Memory, Width};
 
-mod cdma;
-mod dma;
 mod draw;
+mod memory;
 mod palette;
+mod pixel;
 mod registers;
 
-pub use cdma::Cdma;
-pub use dma::Dma;
-
-type Voam = Memory<0xA0>;
-
-#[derive(Default, Clone)]
-struct Vram {
-    vram: Memory<{ Self::VRAM_BANK_SIZE * 2 }>,
-    bank: bool,
-}
-
-impl Vram {
-    pub const fn read(&self, index: usize) -> u8 {
-        self.vram.read(index)
-    }
-
-    const fn map<const DMA: bool>(&self, regs: &PpuRegisters, address: &Address) -> Option<usize> {
-        if DMA || regs.mode() != PpuRegisters::TRANSFER {
-            Some(self.bank(address.index() - 0x8000))
-        } else {
-            None
-        }
-    }
-
-    pub const fn bank(&self, offset: usize) -> usize {
-        offset + (self.bank as usize * Vram::VRAM_BANK_SIZE)
-    }
-
-    pub const fn write(&mut self, index: usize, value: u8) {
-        self.vram.write(index, value);
-    }
-}
-
-impl Vram {
-    pub const VRAM_BANK_SIZE: usize = 0x2000;
-}
+pub use memory::*;
+pub use pixel::Pixel;
+pub use registers::PpuRegisters;
 
 #[derive(Default)]
 pub struct Ppu {
     clock: usize,
-    vram: Vram,
-    voam: Voam,
+    pub vram: Vram,
+    pub voam: Voam,
     regs: registers::PpuRegisters,
     framebuffer: Memory<{ Self::SCREEN_WIDTH * Self::SCREEN_HEIGHT }, Pixel>,
     window_line: u8,
-}
-
-#[repr(C)]
-#[derive(Default, Clone, Copy)]
-pub struct Pixel {
-    pub rgb: [u8; 3],
-}
-
-impl Pixel {
-    pub const fn monochrome(palette: u8, color: u8) -> Self {
-        const fn palette_color(palette: u8, color: u8) -> u8 {
-            let shift = (color & 0x03) * 2;
-            (palette >> shift) & 0x03
-        }
-
-        match palette_color(palette, color) {
-            0 => Self {
-                rgb: [0xE0, 0xF8, 0xD0],
-            },
-            1 => Self {
-                rgb: [0x88, 0xC0, 0x70],
-            },
-            2 => Self {
-                rgb: [0x34, 0x68, 0x56],
-            },
-            3 => Self {
-                rgb: [0x08, 0x18, 0x20],
-            },
-            _ => panic!("Invalid monochrome color"),
-        }
-    }
-
-    pub const fn rgb(rgb: &[u8; 3]) -> Self {
-        let r = rgb[0] as u16;
-        let g = rgb[1] as u16;
-        let b = rgb[2] as u16;
-        Self {
-            rgb: [
-                ((r * 13 + g * 2 + b) >> 1) as u8,
-                ((g * 3 + b) << 1) as u8,
-                ((r * 3 + g * 2 + b * 11) >> 1) as u8,
-            ],
-        }
-    }
-}
-
-impl std::ops::Deref for Pixel {
-    type Target = [u8; 3];
-
-    fn deref(&self) -> &Self::Target {
-        &self.rgb
-    }
 }
 
 impl Ppu {
@@ -211,6 +125,10 @@ impl Ppu {
             }
         }
         render
+    }
+
+    pub const fn vram_slice(&self) -> &[u8] {
+        self.vram.memory.as_slice()
     }
 
     pub const fn ly(&self) -> u8 {

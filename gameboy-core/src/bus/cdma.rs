@@ -1,5 +1,5 @@
 use crate::bus::Bus;
-use crate::bus::ppu::registers::PpuRegisters;
+use crate::bus::ppu::PpuRegisters;
 use crate::cpu::{CycleResult, ExecutionType};
 use crate::util::Address;
 use crate::{Cartridge, Cycles, Width};

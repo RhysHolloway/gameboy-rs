@@ -18,6 +18,7 @@ impl Cgb {
 
     pub fn set_enabled(&mut self, cart: &dyn Cartridge) {
         self.enabled = cart.color();
+        // self.enabled = false;
     }
 
     pub const fn read_mapped(&self, address: &Address) -> u8 {

@@ -1,5 +1,7 @@
 mod apu;
+mod cdma;
 mod cgb;
+mod dma;
 mod interrupts;
 mod ir;
 mod joypad;
@@ -20,8 +22,8 @@ pub struct Bus {
     pub timer: timer::Timer,
     hram: Memory<0x7F>,
     joypad: joypad::Joypad,
-    pub dma: ppu::Dma,
-    cdma: ppu::Cdma,
+    pub dma: dma::Dma,
+    cdma: cdma::Cdma,
     ir: ir::Ir,
     pub apu: apu::APU,
     pub serial: serial::SerialState,

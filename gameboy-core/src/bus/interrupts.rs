@@ -45,6 +45,8 @@ impl Ime {
 }
 
 impl Interrupts {
+    const JOYPAD_INTERRUPT_BIT: u8 = 4;
+
     const fn interrupt_bits(&self) -> u8 {
         self.ie & self.i & 0x1F
     }
@@ -56,18 +58,21 @@ impl Interrupts {
             return InterruptState::Stop;
         }
 
-        if !self.halted() && !ime {
+        if !matches!(&self.pause, PauseState::None) && !ime {
             return InterruptState::Continue;
         }
 
         match self.interrupt_bits() {
-            0 => {
-                return match self.halted() {
-                    true => InterruptState::Halt,
-                    false => InterruptState::Continue,
-                };
-            }
+            0 => match &self.pause {
+                PauseState::Halt => InterruptState::Halt,
+                PauseState::Stop => InterruptState::Stop,
+                PauseState::None => InterruptState::Continue,
+            },
             bit => {
+                if matches!(&self.pause, PauseState::Stop) && bit != Self::JOYPAD_INTERRUPT_BIT {
+                    return InterruptState::Stop;
+                }
+
                 if !ime {
                     self.pause = PauseState::None;
                     return InterruptState::Continue;
@@ -77,7 +82,7 @@ impl Interrupts {
                 self.i &= !(1 << bit);
                 self.pause = PauseState::None;
                 self.ime.state = false;
-                return InterruptState::Interrupt(Address::new(0x40 + 8 * bit));
+                InterruptState::Interrupt(Address::new(0x40 + 8 * bit))
             }
         }
     }

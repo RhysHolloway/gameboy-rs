@@ -127,7 +127,7 @@ impl PpuRegisters {
                 }
                 _ => unreachable!(),
             },
-            _ => unreachable!(),
+            _ => u8::MAX,
         }
     }
 
@@ -163,7 +163,7 @@ impl PpuRegisters {
                     .write(other.value() - Self::ADDRESS_OCPS.value(), value),
                 _ => unreachable!(),
             },
-            _ => unreachable!(),
+            _ => (),
         }
         false
     }

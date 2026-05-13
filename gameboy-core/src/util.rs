@@ -82,7 +82,7 @@ impl std::fmt::UpperHex for Address {
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#04X}", self)
+        write!(f, "{:#04X}", self.0)
     }
 }
 
