@@ -94,7 +94,7 @@ impl Default for Cdma {
 }
 
 impl Bus {
-    pub(crate) fn cdma_cycle(&mut self, result: &mut CycleResult, cart: &dyn Cartridge) -> Cycles {
+    pub(crate) fn cdma_cycle(&mut self, result: &mut CycleResult, cart: &dyn Cartridge) {
         if let Some(transfer) = self
             .cdma
             .transfer
@@ -102,17 +102,21 @@ impl Bus {
             .filter(|transfer| !transfer.hdma || self.ppu.mode() == PpuRegisters::HBLANK)
             && !matches!(result.kind, ExecutionType::Halt | ExecutionType::Stop)
         {
-            let cycles = match transfer.hdma {
+            result.cycles += match transfer.hdma {
                 true => Cycles(32), // 0x10 blocks take 32 t-cycles to transfer
-                false => result.cycles,
+                false => Cycles(((transfer.length - transfer.index + Transfer::BLOCK_SIZE - 1) / Transfer::BLOCK_SIZE * 2) as usize), // 2 t-cycles per byte transferred
+            };
+
+            let blocks = match transfer.hdma {
+                true => 0x10,
+                false => transfer.length,
             };
 
             let source = transfer.source;
             let destination = transfer.destination - 0x8000;
 
             let start = transfer.index;
-            let end =
-                transfer.index + (cycles.t() as u16).min(transfer.length - transfer.index) as Width;
+            let end = blocks.min(transfer.length - transfer.index) as Width;
 
             if end >= transfer.length {
                 self.cdma.transfer = None;
@@ -128,10 +132,6 @@ impl Bus {
                     .vram
                     .write(self.ppu.vram.bank((destination + i) as usize), value);
             }
-
-            cycles
-        } else {
-            Cycles(0)
         }
     }
 }

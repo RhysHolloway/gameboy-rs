@@ -95,6 +95,10 @@ impl PpuRegisters {
     pub const LCDC_BG: u8 = 1;
     pub const LCDC_OBJ: u8 = 1 << 1;
     pub const LCDC_OBJ_SIZE: u8 = 1 << 2;
+    pub const LCDC_BG_MAP: u8 = 1 << 3;
+    pub const LCDC_TILE_DATA: u8 = 1 << 4;
+    pub const LCDC_WINDOW: u8 = 1 << 5;
+    pub const LCDC_WINDOW_MAP: u8 = 1 << 6;
 
     pub const fn lcdc_enabled(&self) -> bool {
         self.lcdc & 0x80 != 0

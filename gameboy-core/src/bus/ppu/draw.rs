@@ -1,11 +1,137 @@
 use crate::bus::cgb;
-use crate::bus::ppu::{Pixel, Ppu, Vram};
+use crate::bus::ppu::{Pixel, Ppu, PpuRegisters, Vram};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrioType {
     Color0,
     PrioFlag,
     Normal,
+}
+
+pub fn draw_background(
+    regs: &super::PpuRegisters,
+    vram: &super::Vram,
+    cgb: &cgb::Cgb,
+    window_line: &mut u8,
+    line: &mut [Pixel],
+) -> [PrioType; Ppu::SCREEN_WIDTH] {
+    let y = regs.ly() as u16;
+    let bg_enable = regs.lcdc & PpuRegisters::LCDC_BG != 0;
+    // In CGB mode LCDC.0 controls BG/window priority, not BG/window visibility.
+    let bg_display = cgb.enabled() || bg_enable;
+    let bg_priority = !cgb.enabled() || bg_enable;
+    let window_enable = regs.lcdc & PpuRegisters::LCDC_WINDOW != 0;
+
+    let bg_map_base = if regs.lcdc & PpuRegisters::LCDC_BG_MAP != 0 {
+        0x1C00
+    } else {
+        0x1800
+    };
+    let tile_data_base = if regs.lcdc & PpuRegisters::LCDC_TILE_DATA != 0 {
+        0x0000
+    } else {
+        0x1000
+    };
+    let window_map_base = if regs.lcdc & PpuRegisters::LCDC_WINDOW_MAP != 0 {
+        0x1C00
+    } else {
+        0x1800
+    };
+
+    let mut bgprio = [PrioType::Color0; Ppu::SCREEN_WIDTH];
+    if bg_display || window_enable {
+        let mut window_drawn = false;
+        for x in 0..Ppu::SCREEN_WIDTH as u16 {
+            let window_x = regs.wx as i16 - 7;
+            let use_window =
+                window_enable && y >= regs.wy as u16 && (x as i16) >= window_x && regs.wx <= 166;
+
+            if !bg_display && !use_window {
+                continue;
+            }
+
+            if use_window {
+                window_drawn = true;
+            }
+
+            let (map_base, pixel_x, pixel_y) = if use_window {
+                let px = (x as i16 - window_x) as u16;
+                let py = (*window_line as u16).wrapping_sub(0);
+                (window_map_base, px, py)
+            } else {
+                let px = x.wrapping_add(regs.scx as u16);
+                let py = y.wrapping_add(regs.scy as u16);
+                (bg_map_base, px, py)
+            };
+
+            let tile_x = (pixel_x / 8) & 31;
+            let tile_y = (pixel_y / 8) & 31;
+
+            let tile_index_addr = (map_base + tile_y * 32 + tile_x) as usize;
+            let tile_index = vram.read(tile_index_addr);
+
+            let mut tile_addr = if regs.lcdc & PpuRegisters::LCDC_TILE_DATA != 0 {
+                tile_data_base + (tile_index as usize) * 16
+            } else {
+                let signed = tile_index as i8 as i16;
+                (0x1000i16 + signed * 16) as usize
+            };
+
+            let (palnr, xflip, yflip, priority) = if cgb.enabled() {
+                let flags = vram.read(tile_index_addr + Vram::VRAM_BANK_SIZE);
+
+                if flags & (1 << 3) != 0 {
+                    tile_addr += Vram::VRAM_BANK_SIZE;
+                }
+                (
+                    flags & 0x07,
+                    flags & (1 << 5) != 0,
+                    flags & (1 << 6) != 0,
+                    flags & (1 << 7) != 0,
+                )
+            } else {
+                (0, false, false, false)
+            };
+
+            let tile_pixel_x = (pixel_x & 7) as usize;
+            let tile_pixel_y = (pixel_y & 7) as usize;
+            let source_x = if xflip {
+                7 - tile_pixel_x
+            } else {
+                tile_pixel_x
+            };
+            let source_y = if yflip {
+                7 - tile_pixel_y
+            } else {
+                tile_pixel_y
+            };
+            let color_addr = tile_addr + source_y * 2;
+            let bit = 7 - source_x;
+
+            let lo = vram.read(color_addr);
+            let hi = vram.read(color_addr + 1);
+
+            let col = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
+
+            bgprio[x as usize] = if !bg_priority || col == 0 {
+                PrioType::Color0
+            } else if cgb.enabled() && priority {
+                PrioType::PrioFlag
+            } else {
+                PrioType::Normal
+            };
+
+            line[x as usize] = if cgb.enabled() {
+                Pixel::rgb(&regs.bcp.color(palnr, col))
+            } else {
+                Pixel::monochrome(regs.bgp, col)
+            };
+        }
+        if window_drawn {
+            *window_line = window_line.wrapping_add(1);
+        }
+    }
+    return bgprio;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,10 +151,14 @@ pub fn draw_sprites(
     bgprio: &[PrioType; Ppu::SCREEN_WIDTH],
     framebuffer: &mut [Pixel],
 ) {
-    let sprite_enable = regs.lcdc & 0x02 != 0;
+    let sprite_enable = regs.lcdc & PpuRegisters::LCDC_OBJ != 0;
 
     if sprite_enable {
-        let sprite_size = if regs.lcdc & 0x04 != 0 { 16 } else { 8 };
+        let sprite_size = if regs.lcdc & PpuRegisters::LCDC_OBJ_SIZE != 0 {
+            16
+        } else {
+            8
+        };
 
         let mut sprites: [Sprite; 10] = [Sprite {
             x: 0,
