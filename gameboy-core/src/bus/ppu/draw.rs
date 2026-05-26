@@ -1,14 +1,61 @@
-use crate::bus::cgb;
+use crate::bus::cgb::{self, Cgb};
 use crate::bus::ppu::{Pixel, Ppu, PpuRegisters, Vram};
 
+
+pub type Framebuffer = [Pixel; Ppu::SCREEN_PIXELS];
+
+pub(super) struct DrawState {
+    pub framebuffer: Framebuffer,
+    window_line: u8,
+}
+
+impl Default for DrawState {
+    fn default() -> Self {
+        Self {
+            framebuffer: [Pixel::Monochrome(0); Ppu::SCREEN_PIXELS],
+            window_line: 0,
+        }
+    }
+}
+
+impl DrawState {
+
+    pub fn line(&mut self, voam: &super::Voam, vram: &super::Vram, regs: &super::PpuRegisters, ly: u8, cgb: &Cgb) {
+        let mut line = [if cgb.enabled() {
+            Pixel::Rgb(*regs.bcp.color(0, 0))
+        } else {
+            Pixel::monochrome(regs.bgp, 0)
+        }; Ppu::SCREEN_WIDTH];
+
+        let bgprio = draw_background(
+            regs,
+            vram,
+            cgb,
+            &mut self.window_line,
+            &mut line,
+        );
+
+        draw_sprites(regs, vram, voam, cgb, &bgprio, &mut line);
+
+        let ly = ly as usize;
+        
+        self.framebuffer[ly * Ppu::SCREEN_WIDTH..(ly + 1) * Ppu::SCREEN_WIDTH].copy_from_slice(&line);
+    }
+
+    pub const fn reset(&mut self) {
+        self.window_line = 0;
+    }
+
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrioType {
+enum PrioType {
     Color0,
     PrioFlag,
     Normal,
 }
 
-pub fn draw_background(
+fn draw_background(
     regs: &super::PpuRegisters,
     vram: &super::Vram,
     cgb: &cgb::Cgb,
@@ -122,7 +169,7 @@ pub fn draw_background(
             };
 
             line[x as usize] = if cgb.enabled() {
-                Pixel::rgb(&regs.bcp.color(palnr, col))
+                Pixel::Rgb(*regs.bcp.color(palnr, col))
             } else {
                 Pixel::monochrome(regs.bgp, col)
             };
@@ -143,7 +190,7 @@ struct Sprite {
     oam_index: usize,
 }
 
-pub fn draw_sprites(
+fn draw_sprites(
     regs: &super::PpuRegisters,
     vram: &super::Vram,
     voam: &super::Voam,
@@ -254,7 +301,7 @@ pub fn draw_sprites(
                         }
 
                         framebuffer[(sprite.x + x) as usize] =
-                            Pixel::rgb(&regs.ocp.color(c_palnr, colnr));
+                            Pixel::Rgb(*regs.ocp.color(c_palnr, colnr));
                     } else {
                         framebuffer[(sprite.x + x) as usize] = Pixel::monochrome(d_pal, colnr);
                     }

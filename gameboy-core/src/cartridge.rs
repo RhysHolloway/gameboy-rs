@@ -3,6 +3,8 @@ mod mbc1;
 mod mbc3;
 mod mbc5;
 
+use alloc::boxed::Box;
+
 use crate::Address;
 
 #[derive(Debug)]
@@ -11,8 +13,8 @@ pub enum CartridgeError {
     NotSupported(u8),
 }
 
-impl std::fmt::Display for CartridgeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CartridgeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoHeader => write!(f, "Cartridge has an invalid header!"),
             Self::NotSupported(t) => write!(f, "Cartridge type 0x{t:02X} is not supported!"),
@@ -41,7 +43,7 @@ pub trait Cartridge {
         Self: Sized;
 
     fn title(&self) -> &str {
-        str::from_utf8(&self.rom()[0x134..0x144]).unwrap_or("UNKNOWN")
+        str::from_utf8(&self.rom()[0x134..0x143]).unwrap_or("UNKNOWN")
     }
 
     fn color(&self) -> bool {

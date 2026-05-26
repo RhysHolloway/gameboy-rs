@@ -1,6 +1,8 @@
 mod channels;
 mod components;
 
+use core::u8;
+
 use crate::bus::apu::channels::*;
 use crate::{Address, Cycles, Width};
 
@@ -18,7 +20,7 @@ pub struct AudioState {
 }
 
 impl AudioState {
-    pub fn mix(&self) -> [u8; 2] {
+    pub const fn mix(&self) -> [u8; 2] {
         if !self.enabled {
             return [0, 0];
         }
@@ -34,11 +36,6 @@ impl AudioState {
             self.mix_side(&channels, 4, (self.volume_vin >> 4) & 0x07),
             self.mix_side(&channels, 0, self.volume_vin & 0x07),
         ]
-    }
-
-    pub fn mix_f32(&self) -> [f32; 2] {
-        let [left, right] = self.mix();
-        [Self::normalize(left), Self::normalize(right)]
     }
 
     const fn status(&self) -> u8 {
@@ -57,21 +54,28 @@ impl AudioState {
         self.ch4 = Channel4::default();
     }
 
-    fn mix_side(&self, channels: &[u8; 4], panning_shift: u8, volume: u8) -> u8 {
-        let mut mixed = 0u16;
-        for (channel, value) in channels.iter().enumerate() {
-            if self.panning & (1 << (channel as u8 + panning_shift)) != 0 {
-                mixed += *value as u16;
-            }
+    const fn mix_channel(&self, channel: usize, channels: &[u8; 4], panning_shift: u8) -> u16 {
+        if self.panning & (1 << (channel as u8 + panning_shift)) != 0 {
+            channels[channel] as u16
+        } else {
+            0
         }
-
-        ((mixed * (volume as u16 + 1)) / 8).min(u8::MAX as u16) as u8
     }
 
-    fn normalize(value: u8) -> f32 {
-        value as f32 / 60.0
+    const fn mix_side(&self, channels: &[u8; 4], panning_shift: u8, volume: u8) -> u8 {
+        let mut mixed = 0u16;
+
+        mixed += self.mix_channel(0, channels, panning_shift) as u16;
+        mixed += self.mix_channel(1, channels, panning_shift) as u16;
+        mixed += self.mix_channel(2, channels, panning_shift) as u16;
+        mixed += self.mix_channel(3, channels, panning_shift) as u16;
+
+        let mixed = (mixed * (volume as u16 + 1)) / 8;
+        if (u8::MAX as u16) < mixed { u8::MAX } else { mixed as u8 }
     }
 }
+
+pub type AudioCallback = super::Callback<([u8; 2], usize)>;
 
 #[derive(Default)]
 pub struct APU {
@@ -79,7 +83,7 @@ pub struct APU {
     wave_ram: [u8; 16],
     frame_counter: usize,
     frame_step: usize,
-    pub(super) callback: Option<Box<dyn FnMut([f32; 2], usize) + 'static>>,
+    pub(super) callback: AudioCallback,
 }
 
 impl APU {
@@ -144,11 +148,11 @@ impl APU {
         }
 
         if let Some(callback) = self.callback.as_mut() {
-            callback(self.state.mix_f32(), cycles.t());
+            callback((self.state.mix(), cycles.t()));
         }
     }
 
-    pub fn mix(&self) -> [u8; 2] {
+    pub const fn mix(&self) -> [u8; 2] {
         self.state.mix()
     }
 
@@ -168,7 +172,7 @@ impl APU {
         }
     }
 
-    fn frame_sequencer_step(&mut self) {
+    const fn frame_sequencer_step(&mut self) {
         match self.frame_step {
             0 | 2 | 4 | 6 => {
                 self.state.ch1.length();

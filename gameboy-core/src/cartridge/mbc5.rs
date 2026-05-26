@@ -1,9 +1,11 @@
+use alloc::boxed::Box;
+
 use super::{ram_banks, rom_banks};
 use crate::{Address, Cartridge};
 
 pub struct MBC5 {
-    rom: Vec<u8>,
-    ram: Vec<u8>,
+    rom: Box<[u8]>,
+    ram: Box<[u8]>,
     ram_on: bool,
     rumble: bool,
     rombank: usize,
@@ -13,26 +15,6 @@ pub struct MBC5 {
 }
 
 impl MBC5 {
-    pub fn from_vec(data: Vec<u8>) -> Self {
-        let rambanks = match data[0x147] {
-            0x1A | 0x1B | 0x1D | 0x1E => ram_banks(&data) as usize,
-            _ => 0,
-        };
-
-        let rumble = matches!(data[0x147], 0x1C..=0x1E);
-
-        Self {
-            rombanks: rom_banks(&data) as usize,
-            rom: data,
-            ram: vec![0; rambanks * 0x2000],
-            ram_on: false,
-            rumble,
-            rombank: 1,
-            rambank: 0,
-            rambanks,
-        }
-    }
-
     fn readrom(&self, address: u16) -> u8 {
         let bank = if address < 0x4000 {
             0
@@ -85,7 +67,24 @@ impl Cartridge for MBC5 {
     where
         Self: Sized,
     {
-        Self::from_vec(data.as_ref().to_vec())
+        let data = data.as_ref();
+        let rambanks = match data[0x147] {
+            0x1A | 0x1B | 0x1D | 0x1E => ram_banks(&data) as usize,
+            _ => 0,
+        };
+
+        let rumble = matches!(data[0x147], 0x1C..=0x1E);
+
+        Self {
+            rombanks: rom_banks(&data) as usize,
+            rom: data.into(),
+            ram: unsafe { Box::new_zeroed_slice(rambanks * 0x2000).assume_init() },
+            ram_on: false,
+            rumble,
+            rombank: 1,
+            rambank: 0,
+            rambanks,
+        }
     }
 
     fn read(&self, address: Address) -> u8 {

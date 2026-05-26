@@ -1,3 +1,5 @@
+use core::fmt::{Display, Formatter, Result};
+
 use crate::Cartridge;
 use crate::bus::{Bus, InterruptState};
 use crate::util::{Address, Width};
@@ -15,8 +17,8 @@ pub struct CPU {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Opcode(pub u8);
 
-impl core::fmt::Display for Opcode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Opcode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(f, "0x{:02X}", self.0)
     }
 }

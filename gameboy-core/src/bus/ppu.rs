@@ -1,16 +1,15 @@
 use crate::bus::cgb::Cgb;
 use crate::bus::ppu::palette::Palette;
 use crate::util::Address;
-use crate::{Cycles, Memory, Width};
+use crate::{Cycles, Width};
 
 mod draw;
 mod memory;
 mod palette;
-mod pixel;
 mod registers;
 
 pub use memory::*;
-pub use pixel::Pixel;
+pub use draw::*;
 pub use registers::PpuRegisters;
 
 #[derive(Default)]
@@ -19,13 +18,25 @@ pub struct Ppu {
     pub vram: Vram,
     pub voam: Voam,
     regs: registers::PpuRegisters,
-    framebuffer: Memory<{ Self::SCREEN_WIDTH * Self::SCREEN_HEIGHT }, Pixel>,
-    window_line: u8,
+    draw: draw::DrawState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Pixel {
+    Monochrome(u8),
+    Rgb([u8; 3]),
+}
+
+impl Pixel {
+    const fn monochrome(palette: u8, color: u8) -> Self {
+        Self::Monochrome((palette >> (color & 0x03) * 2) & 0x03)
+    }
 }
 
 impl Ppu {
     pub const SCREEN_WIDTH: usize = 160;
     pub const SCREEN_HEIGHT: usize = 144;
+    pub const SCREEN_PIXELS: usize = Self::SCREEN_WIDTH * Self::SCREEN_HEIGHT;
 
     pub const ADDRESS_VBK: Width = 0xFF4F; // CGB only, VRAM bank select
 
@@ -75,7 +86,7 @@ impl Ppu {
             0xFF40..=0xFF45 | 0xFF47..=0xFF4B | 0xFF68..=0xFF6C => {
                 if self.regs.write(cgb, &address, value) {
                     self.clock = 0;
-                    self.window_line = 0;
+                    self.draw.reset();
                 }
             }
             _ => unreachable!(),
@@ -106,7 +117,7 @@ impl Ppu {
                     self.regs.update_ly(int, self.ly().wrapping_add(1));
                     if self.ly() >= Self::SCREEN_HEIGHT as u8 + 10 {
                         self.regs.update_ly(int, 0);
-                        self.window_line = 0;
+                        self.draw.reset();
                         self.regs.set_mode(int, PpuRegisters::OAM);
                     }
                 }
@@ -117,7 +128,7 @@ impl Ppu {
                 PpuRegisters::TRANSFER if self.clock >= 172 => {
                     self.clock -= 172;
                     if self.ly() < Self::SCREEN_HEIGHT as u8 {
-                        self.draw(cgb);
+                        self.draw.line(&self.voam, &self.vram, &self.regs, self.ly(), cgb);
                     }
                     self.regs.set_mode(int, PpuRegisters::HBLANK);
                 }
@@ -135,33 +146,8 @@ impl Ppu {
         self.regs.ly
     }
 
-    fn draw(&mut self, cgb: &Cgb) {
-        let mut line = [if cgb.enabled() {
-            Pixel::rgb(&self.regs.bcp.color(0, 0))
-        } else {
-            Pixel::monochrome(self.regs.bgp, 0)
-        }; Ppu::SCREEN_WIDTH];
-
-        let bgprio = draw::draw_background(
-            &self.regs,
-            &self.vram,
-            cgb,
-            &mut self.window_line,
-            &mut line,
-        );
-
-        draw::draw_sprites(&self.regs, &self.vram, &self.voam, cgb, &bgprio, &mut line);
-
-        let start = self.ly() as usize * Self::SCREEN_WIDTH;
-        self.framebuffer.as_slice_mut()[start..start + Self::SCREEN_WIDTH].copy_from_slice(&line);
-    }
-
     pub const fn clock(&self) -> usize {
         self.clock
-    }
-
-    pub const fn framebuffer(&self) -> &[Pixel] {
-        self.framebuffer.as_slice()
     }
 
     pub const fn lcdc(&self) -> u8 {
@@ -174,5 +160,9 @@ impl Ppu {
 
     pub const fn mode(&self) -> u8 {
         self.regs.mode()
+    }
+
+    pub const fn framebuffer(&self) -> &Framebuffer {
+        &self.draw.framebuffer
     }
 }

@@ -1,3 +1,6 @@
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 use crate::Address;
 use crate::cartridge::{ram_banks, rom_banks};
 

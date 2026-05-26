@@ -1,4 +1,7 @@
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use core::ops::{Add, AddAssign, Sub, SubAssign};
+use core::fmt::{UpperHex, Display, Formatter, Result};
+
+use alloc::boxed::Box;
 
 pub type Width = u16;
 
@@ -74,14 +77,14 @@ impl Sub<Width> for Address {
     }
 }
 
-impl std::fmt::UpperHex for Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::UpperHex::fmt(&self.0, f)
+impl UpperHex for Address {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        UpperHex::fmt(&self.0, f)
     }
 }
 
-impl std::fmt::Display for Address {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for Address {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         write!(f, "{:#04X}", self.0)
     }
 }

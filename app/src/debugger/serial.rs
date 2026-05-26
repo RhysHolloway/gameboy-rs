@@ -1,7 +1,6 @@
 use std::sync::mpsc::*;
 
 use egui::Widget;
-use gameboy_core::Cartridge;
 
 struct SerialConnection {
     sender: Sender<u8>,
@@ -15,9 +14,6 @@ pub struct SerialView {
 }
 
 impl SerialView {
-    pub fn is_connected(&self) -> bool {
-        self.connection.is_some()
-    }
 
     pub fn window(&mut self, ui: &mut egui::Ui) {
         ui.label("Serial I/O");

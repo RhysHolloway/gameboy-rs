@@ -1,12 +1,14 @@
 use crate::Cycles;
 use crate::util::Address;
 
+pub type SerialCallback = super::Callback<u8>;
+
 pub struct SerialState {
     sb: u8,
     sc: u8,
     active: bool,
     cycles: u16,
-    pub(super) callback: Option<Box<dyn FnMut(u8)>>,
+    pub(super) callback: SerialCallback,
 }
 
 impl Default for SerialState {

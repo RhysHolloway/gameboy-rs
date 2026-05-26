@@ -14,6 +14,11 @@ use crate::cpu::CycleResult;
 use crate::util::{Address, Controls};
 use crate::{Cartridge, Memory, Width};
 pub use interrupts::*;
+pub use ppu::*;
+pub use serial::SerialCallback;
+pub use apu::AudioCallback;
+
+pub type Callback<T> = Option<alloc::boxed::Box<dyn FnMut(T) + 'static>>;
 
 #[derive(Default)]
 pub struct Bus {
@@ -36,14 +41,11 @@ impl Bus {
     const ECHO_START: usize = 0xE000;
     const HRAM_START: usize = 0xFF80;
 
-    pub fn set_serial_callback(&mut self, callback: Option<Box<dyn FnMut(u8)>>) {
+    pub fn set_serial_callback(&mut self, callback: serial::SerialCallback) {
         self.serial.callback = callback;
     }
 
-    pub fn set_audio_callback(
-        &mut self,
-        callback: Option<Box<dyn FnMut([f32; 2], usize) + 'static>>,
-    ) {
+    pub fn set_audio_callback(&mut self, callback: apu::AudioCallback) {
         self.apu.callback = callback;
     }
 

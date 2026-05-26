@@ -1,10 +1,11 @@
+use alloc::boxed::Box;
 use web_time as time;
 
 use crate::cartridge::{ram_banks, rom_banks};
 use crate::{Address, Cartridge};
 
 pub struct MBC3 {
-    rom: Vec<u8>,
+    rom: Box<[u8]>,
     ram: Box<[u8]>,
     ram_enabled: bool,
     rom_bank: u8,
@@ -137,7 +138,7 @@ impl Cartridge for MBC3 {
         };
 
         Self {
-            rom: data.to_vec(),
+            rom: data.into(),
             ram: unsafe { Box::new_zeroed_slice(ram_banks as usize * 0x2000).assume_init() },
             ram_bank: 0,
             ram_enabled: false,
@@ -148,7 +149,7 @@ impl Cartridge for MBC3 {
     }
 
     fn rom(&self) -> &[u8] {
-        self.rom.as_slice()
+        &self.rom
     }
 
     fn ram(&self) -> &[u8] {

@@ -1,8 +1,17 @@
+#![no_std]
+
+extern crate alloc;
+
 pub mod bus;
 mod cartridge;
 pub mod cpu;
 pub mod util;
 
+use core::cmp::Ordering;
+use core::ops::{AddAssign, Div, Mul};
+use alloc::boxed::Box;
+
+use crate::bus::Framebuffer;
 pub use crate::cartridge::*;
 pub use crate::util::*;
 
@@ -39,18 +48,18 @@ impl PartialEq<usize> for Cycles {
 }
 
 impl PartialOrd<usize> for Cycles {
-    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &usize) -> Option<Ordering> {
         self.0.partial_cmp(other)
     }
 }
 
-impl std::ops::AddAssign for Cycles {
+impl AddAssign for Cycles {
     fn add_assign(&mut self, rhs: Self) {
         self.0 += rhs.0;
     }
 }
 
-impl std::ops::Mul<usize> for Cycles {
+impl Mul<usize> for Cycles {
     type Output = Self;
 
     fn mul(self, rhs: usize) -> Self::Output {
@@ -58,7 +67,7 @@ impl std::ops::Mul<usize> for Cycles {
     }
 }
 
-impl std::ops::Div<usize> for Cycles {
+impl Div<usize> for Cycles {
     type Output = Self;
 
     fn div(self, rhs: usize) -> Self::Output {
@@ -90,17 +99,13 @@ impl GameboyColor {
         self.bus.load(cart);
     }
 
-    pub fn frame_to_rgba(&self, output: &mut [u8]) {
-        for (idx, pixel) in self.bus.ppu.framebuffer().iter().enumerate() {
-            let base = idx * 4;
-            output[base..base + 3].copy_from_slice(&**pixel);
-            output[base + 3] = 0xFF;
-        }
-    }
-
     pub fn update_input(&mut self, button: Controls, pressed: bool) {
         self.bus.update_input(button, pressed);
     }
 
     pub fn handle_interrupts(&mut self) {}
+    
+    pub const fn framebuffer(&self) -> &Framebuffer {
+        self.bus.ppu.framebuffer()
+    }
 }

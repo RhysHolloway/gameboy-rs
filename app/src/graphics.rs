@@ -1,5 +1,6 @@
 use egui_winit::EventResponse;
 use gameboy_core::Cartridge;
+use gameboy_core::bus::Pixel;
 use pixels::wgpu;
 use pixels::winit::event::WindowEvent;
 use pixels::winit::event_loop::{ActiveEventLoop, EventLoopProxy};
@@ -174,12 +175,35 @@ impl GraphicsState {
             .unwrap();
     }
 
-    pub(crate) fn update_frame(&mut self, gameboy: &gameboy_core::GameboyColor) {
-        gameboy.frame_to_rgba(self.pixels.frame_mut());
-    }
-
     pub(crate) fn load(&self, cart: &dyn Cartridge) {
         self.window
             .set_title(&format!("Gameboy Emulator - {}", cart.title()));
     }
+
+    pub(crate) fn update_frame(&mut self, gameboy: &gameboy_core::GameboyColor) {
+        self.pixels.frame_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .into_iter()
+            .zip(gameboy.framebuffer())
+            .for_each(convert_pixel);
+    }
+}
+
+const fn convert_pixel((data, pixel): (&mut [u8; 4], &Pixel)) {
+    *data = match *pixel {
+        Pixel::Monochrome(shade) => match shade {
+            0 => [0xE0, 0xF8, 0xD0, 0xFF],
+            1 => [0x88, 0xC0, 0x70, 0xFF],
+            2 => [0x34, 0x68, 0x56, 0xFF],
+            3 => [0x08, 0x18, 0x20, 0xFF],
+            _ => unreachable!(),
+        },
+        Pixel::Rgb([r, g, b]) => [
+            ((r * 13 + g * 2 + b) >> 1) as u8,
+            ((g * 3 + b) << 1) as u8,
+            ((r * 3 + g * 2 + b * 11) >> 1) as u8,
+            0xFF,
+        ],
+    };
 }

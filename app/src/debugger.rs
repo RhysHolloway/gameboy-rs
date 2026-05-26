@@ -1,13 +1,8 @@
-use egui::Widget;
 use gameboy_core::Cartridge;
 use pixels::winit::dpi::PhysicalSize;
-use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, Sender};
 
-use gameboy_core::cpu::{CycleResult, DReg, ExecutionType, Opcode, Reg};
+use gameboy_core::cpu::{CycleResult, DReg, ExecutionType, Reg};
 use gameboy_core::util::{Address, Width};
-
-use self::opcode::OpcodeDescriptor;
 
 use super::GameboyColor;
 
@@ -145,15 +140,16 @@ impl Debugger {
         }
     }
 
-    pub fn new_cartridge(&mut self, cartridge: &(dyn Cartridge + 'static)) {
+    pub fn new_cartridge(&mut self, cartridge: &dyn Cartridge) {
+        self.reset();
         self.memory.new_cartridge(cartridge);
         self.breakpoint.new_cartridge(cartridge);
-        self.reset();
     }
 
     pub fn reset(&mut self) {
         self.run = false;
         self.step = false;
         self.serial.reset();
+        self.breakpoint.reset();
     }
 }

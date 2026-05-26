@@ -1,6 +1,6 @@
 use egui::Widget;
 use egui::ahash::HashMap;
-use gameboy_core::cpu::{CycleResult, DReg, ExecutionType};
+use gameboy_core::cpu::DReg;
 use gameboy_core::{Address, Cartridge, GameboyColor};
 
 #[derive(Default)]
@@ -94,7 +94,7 @@ impl BreakpointView {
         }
     }
 
-    pub(crate) fn new_cartridge(&mut self, _: &(dyn Cartridge + 'static)) {
+    pub(crate) fn new_cartridge(&mut self, _: &dyn Cartridge) {
         self.list.clear();
         self.delete_mode = false;
     }

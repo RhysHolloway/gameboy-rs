@@ -75,5 +75,5 @@ impl MemoryView {
         }
     }
 
-    pub(crate) fn new_cartridge(&self, cartridge: &(dyn Cartridge + 'static)) {}
+    pub(crate) fn new_cartridge(&self, _: &dyn Cartridge) {}
 }

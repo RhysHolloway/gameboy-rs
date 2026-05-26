@@ -1,9 +1,7 @@
 pub extern crate pixels;
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use gameboy_core::util::Controls;
 
 use pixels::winit::event_loop::EventLoopProxy;
@@ -22,6 +20,7 @@ use pixels::winit::{
 use crate::debugger::Debugger;
 use gameboy_core::{Cartridge, Cycles, GameboyColor};
 
+mod audio;
 mod debugger;
 mod graphics;
 
@@ -31,187 +30,10 @@ pub struct Application<P: EmulatorPlatform> {
     pub emulator: Emulator,
     pub cartridge: Option<Box<dyn Cartridge + 'static>>,
     graphics: Option<GraphicsState>,
-    audio: Option<Audio>,
+    audio: Option<audio::Audio>,
     proxy: Arc<EventLoopProxy<EmulatorEvent>>,
     event_loop: Option<EventLoop<EmulatorEvent>>,
     _p: std::marker::PhantomData<P>,
-}
-
-struct Audio {
-    sample_rate: usize,
-    buffer: Arc<Mutex<VecDeque<[f32; 2]>>>,
-    _stream: cpal::Stream,
-}
-
-impl Audio {
-    const MAX_BUFFERED_MS: usize = 100;
-
-    fn callback(&self) -> Box<dyn FnMut([f32; 2], usize) + 'static> {
-        let buffer = Arc::clone(&self.buffer);
-        let max_buffered_frames = (self.sample_rate * Self::MAX_BUFFERED_MS / 1000).max(1);
-        let sample_rate = self.sample_rate as u64;
-        let mut sample_counter = 0_u64;
-        const CLOCK_SPEED: u64 = GameboyColor::CLOCK_SPEED as u64;
-
-        Box::new(move |sample, cycles| {
-            sample_counter += cycles as u64 * sample_rate;
-            let frames = sample_counter / CLOCK_SPEED;
-            sample_counter %= CLOCK_SPEED;
-
-            if frames == 0 {
-                return;
-            }
-
-            if let Ok(mut buffer) = buffer.lock() {
-                for _ in 0..frames {
-                    while buffer.len() >= max_buffered_frames {
-                        buffer.pop_front();
-                    }
-                    buffer.push_back(sample);
-                }
-            }
-        })
-    }
-
-    pub fn new() -> Option<Self> {
-        let host = cpal::default_host();
-        let device = match host.default_output_device() {
-            Some(device) => device,
-            None => {
-                error!("No output audio device found");
-                return None;
-            }
-        };
-
-        let supported_config = match device.default_output_config() {
-            Ok(config) => config,
-            Err(err) => {
-                error!("No default output audio config found: {err}");
-                return None;
-            }
-        };
-
-        let sample_format = supported_config.sample_format();
-        let config = supported_config.config();
-        let channels = config.channels.max(1) as usize;
-        let sample_rate = config.sample_rate as usize;
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
-
-        info!(
-            "Using audio device: {}, config: {:?}, sample format: {:?}",
-            device
-                .description()
-                .map(|d| d.name().to_string())
-                .unwrap_or_else(|_| "Unknown".to_string()),
-            config,
-            sample_format
-        );
-
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => {
-                Self::build_stream_f32(&device, &config, channels, Arc::clone(&buffer))
-            }
-            cpal::SampleFormat::I16 => {
-                Self::build_stream_i16(&device, &config, channels, Arc::clone(&buffer))
-            }
-            cpal::SampleFormat::U16 => {
-                Self::build_stream_u16(&device, &config, channels, Arc::clone(&buffer))
-            }
-            format => {
-                error!("Unsupported output audio sample format: {format:?}");
-                return None;
-            }
-        };
-
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(err) => {
-                error!("Failed to build output audio stream: {err}");
-                return None;
-            }
-        };
-
-        if let Err(err) = stream.play() {
-            error!("Failed to play output audio stream: {err}");
-            return None;
-        }
-
-        Some(Self {
-            sample_rate,
-            buffer,
-            _stream: stream,
-        })
-    }
-
-    fn build_stream_f32(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        channels: usize,
-        buffer: Arc<Mutex<VecDeque<[f32; 2]>>>,
-    ) -> Result<cpal::Stream, cpal::BuildStreamError> {
-        device.build_output_stream(
-            config,
-            move |data: &mut [f32], _| Self::write_output(data, channels, &buffer, |sample| sample),
-            |err| error!("Audio stream error: {err}"),
-            None,
-        )
-    }
-
-    fn build_stream_i16(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        channels: usize,
-        buffer: Arc<Mutex<VecDeque<[f32; 2]>>>,
-    ) -> Result<cpal::Stream, cpal::BuildStreamError> {
-        device.build_output_stream(
-            config,
-            move |data: &mut [i16], _| {
-                Self::write_output(data, channels, &buffer, |sample| {
-                    (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
-                })
-            },
-            |err| error!("Audio stream error: {err}"),
-            None,
-        )
-    }
-
-    fn build_stream_u16(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        channels: usize,
-        buffer: Arc<Mutex<VecDeque<[f32; 2]>>>,
-    ) -> Result<cpal::Stream, cpal::BuildStreamError> {
-        device.build_output_stream(
-            config,
-            move |data: &mut [u16], _| {
-                Self::write_output(data, channels, &buffer, |sample| {
-                    ((sample.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16
-                })
-            },
-            |err| error!("Audio stream error: {err}"),
-            None,
-        )
-    }
-
-    fn write_output<T>(
-        data: &mut [T],
-        channels: usize,
-        buffer: &Arc<Mutex<VecDeque<[f32; 2]>>>,
-        convert: impl Fn(f32) -> T,
-    ) {
-        let mut buffer = buffer.try_lock().ok();
-
-        for frame in data.chunks_mut(channels) {
-            let sample = buffer
-                .as_mut()
-                .and_then(|buffer| buffer.pop_front())
-                .unwrap_or([0.0, 0.0]);
-
-            for (channel, output) in frame.iter_mut().enumerate() {
-                *output = convert(sample[channel.min(1)]);
-            }
-        }
-    }
 }
 
 impl<P: EmulatorPlatform> Application<P> {
@@ -248,6 +70,9 @@ impl<P: EmulatorPlatform> Application<P> {
                 self.emulator.gameboy.reset(&*cart);
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.load(&*cart);
+                }
+                if let Some(debugger) = self.emulator.debugger.as_mut() {
+                    debugger.new_cartridge(&*cart);
                 }
                 self.cartridge = Some(cart);
             }
@@ -314,12 +139,12 @@ impl<P: EmulatorPlatform> Application<P> {
             return;
         }
 
-        if let Some(audio) = Audio::new() {
+        if let Some(audio) = audio::Audio::new() {
             info!("Audio output created");
             self.emulator
                 .gameboy
                 .bus
-                .set_audio_callback(Some(audio.callback()));
+                .set_audio_callback(audio.callback());
             self.audio = Some(audio);
         }
     }
